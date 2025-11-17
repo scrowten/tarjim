@@ -29,25 +29,50 @@ import argostranslate.translate
 # ===========================
 def setup_argos_translation(from_code: str = "ar", to_code: str = "id") -> None:
     """
-    Ensure Argos translation package for from_code -> to_code is installed.
-    This assumes there is a direct package ar->id. If not, adjust to install
-    ar->en and en->id, etc.
+    Ensure Argos translation packages are installed.
+    Tries to find a direct package (from_code -> to_code). If not found,
+    it falls back to installing intermediate packages via English
+    (from_code -> en, and en -> to_code).
     """
     argostranslate.package.update_package_index()
     available_packages = argostranslate.package.get_available_packages()
 
-    try:
-        package_to_install = next(
-            p for p in available_packages
-            if p.from_code == from_code and p.to_code == to_code
-        )
-    except StopIteration:
-        raise RuntimeError(
-            f"No Argos package found for {from_code} -> {to_code}. "
-            f"Check available packages or install via CLI."
-        )
+    # Filter out None values from packages list
+    valid_packages = [p for p in available_packages if p]
 
-    argostranslate.package.install_from_path(package_to_install.download())
+    def find_package(f_code, t_code):
+        try:
+            return next(
+                p for p in valid_packages
+                if p.from_code == f_code and p.to_code == t_code
+            )
+        except StopIteration:
+            return None
+
+    # 1. Try to find direct translation package
+    direct_package = find_package(from_code, to_code)
+    if direct_package:
+        print(f"Found direct translation package: {from_code} -> {to_code}")
+        argostranslate.package.install_from_path(direct_package.download())
+        return
+
+    # 2. Fallback to intermediate translation via English
+    if from_code != "en" and to_code != "en":
+        print(f"No direct package found. Trying intermediate translation via 'en'.")
+        from_en_package = find_package(from_code, "en")
+        en_to_package = find_package("en", to_code)
+
+        if from_en_package and en_to_package:
+            print(f"Found intermediate packages: {from_code}->en and en->{to_code}")
+            argostranslate.package.install_from_path(from_en_package.download())
+            argostranslate.package.install_from_path(en_to_package.download())
+            return
+
+    # 3. If no path found, raise an error
+    raise RuntimeError(
+        f"Could not find a translation path for {from_code} -> {to_code}. "
+        f"Neither a direct package nor an intermediate path via 'en' was found."
+    )
 
 
 def translate_text(text: str, from_code: str = "ar", to_code: str = "id") -> str:
@@ -123,6 +148,27 @@ def load_font(font_size: int = 16) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
+def get_dynamic_font(bbox, font_path: str | None) -> ImageFont.FreeTypeFont:
+    """
+    Determines an appropriate font size based on the bbox height and loads the font.
+    A simple heuristic is to use the bbox height as the font size.
+    bbox: (x1, y1, x2, y2)
+    """
+    _x1, y1, _x2, y2 = bbox
+    bbox_height = y2 - y1
+
+    # Heuristic: font size is often close to pixel height of the line.
+    # We can use a slightly smaller size to ensure it fits.
+    font_size = int(bbox_height * 0.8)
+    if font_size <= 0:
+        font_size = 1 # fallback for tiny boxes
+
+    if font_path:
+        return ImageFont.truetype(font_path, font_size)
+
+    return ImageFont.load_default(size=font_size)
+
+
 def draw_text_in_box(draw: ImageDraw.ImageDraw, text: str, bbox, font) -> None:
     """
     Simple word-wrapping inside a bbox using PIL.
@@ -175,20 +221,32 @@ def overlay_translations_on_image(
     # Here we use white background for a clean translated PDF.
     translated_img = Image.new("RGB", image.size, "white")
     draw = ImageDraw.Draw(translated_img)
-    font = load_font(font_size=16)
 
-    text_lines = page_prediction["text_lines"]  # list of dicts
+    # Find a valid font path once to avoid searching for it in a loop
+    font_path = next(
+        (p for p in [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+        ] if os.path.exists(p)),
+        None
+    )
 
+    text_lines = page_prediction.text_lines  # list of dicts
     for line in text_lines:
-        arabic_text = line["text"]
-        bbox = line["bbox"]  # (x1, y1, x2, y2)
+        src_text = line.text
+        bbox = line.bbox  # (x1, y1, x2, y2)
         try:
-            ind_text = translate_text(arabic_text, from_code=from_code, to_code=to_code)
+            dest_text = translate_text(src_text, from_code=from_code, to_code=to_code)
+        except AttributeError as e:
+            eng_text = translate_text(src_text, from_code=from_code, to_code='en')
+            dest_text = translate_text(eng_text, from_code='en', to_code=to_code)
         except Exception as e:
             # Fallback: keep original text if translation fails
-            ind_text = arabic_text + f" (ERR: {e})"
+            dest_text = src_text + f" (ERR: {e})"
 
-        draw_text_in_box(draw, ind_text, bbox, font)
+        font = get_dynamic_font(bbox, font_path)
+        draw_text_in_box(draw, dest_text, bbox, font)
 
     return translated_img
 
@@ -219,10 +277,10 @@ def images_to_pdf(images: list[Image.Image], output_pdf_path: str, dpi: int = 30
 # ===========================
 # Main pipeline
 # ===========================
-def translate_pdf_ar_to_id(input_pdf: str, output_pdf: str, dpi: int = 300):
+def translate_pdf(input_pdf: str, output_pdf: str, from_code: str = "ar", to_code: str = "id", dpi: int = 300):
     # 1. Prepare translation models (Argos)
-    print("Setting up Argos translation (ar -> id)...")
-    setup_argos_translation(from_code="ar", to_code="id")
+    print(f"Setting up Argos translation ({from_code} -> {to_code})...")
+    setup_argos_translation(from_code=from_code, to_code=to_code)
 
     # 2. Convert PDF to images
     print("Rendering PDF to images...")
@@ -240,8 +298,8 @@ def translate_pdf_ar_to_id(input_pdf: str, output_pdf: str, dpi: int = 300):
         translated_img = overlay_translations_on_image(
             img,
             page_pred,
-            from_code="ar",
-            to_code="id",
+            from_code=from_code,
+            to_code=to_code,
         )
         translated_images.append(translated_img)
 
@@ -257,6 +315,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("input_pdf", help="Path to input PDF file (Arabic)")
     parser.add_argument("output_base", help="Base output directory where per-file subdirectory will be created")
+    parser.add_argument("--src_lang", type=str, default="ar", help="Source language code (default: ar)")
+    parser.add_argument("--dst_lang", type=str, default="id", help="Destination language code (default: id)")
     parser.add_argument("--dpi", type=int, default=300, help="Rendering DPI (default: 300)")
     args = parser.parse_args()
 
@@ -277,10 +337,10 @@ if __name__ == "__main__":
     os.makedirs(final_output_dir, exist_ok=True)
 
     # Build output PDF path inside the per-file directory
-    output_pdf_path = os.path.join(final_output_dir, f"{pdf_basename}_id.pdf")
+    output_pdf_path = os.path.join(final_output_dir, f"{pdf_basename}_en.pdf")
 
     try:
-        translate_pdf_ar_to_id(input_pdf_path, output_pdf_path, dpi=args.dpi)
+        translate_pdf(input_pdf_path, output_pdf_path, from_code=args.src_lang, to_code=args.dst_lang, dpi=args.dpi)
     except Exception as e:
         print(f"Translation failed: {e}", file=sys.stderr)
         raise SystemExit(1)
