@@ -22,6 +22,7 @@ RUN python -c "from argostranslate import package; package.update_package_index(
 
 # Copy application code
 COPY ./src /app/src
+COPY ./static /app/static
 
 # Expose port and run the API
 EXPOSE 8000

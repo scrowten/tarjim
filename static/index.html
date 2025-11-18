@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tarjim - PDF Translator</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🕌 Tarjim PDF Translator</h1>
+            <p>Upload an Arabic PDF to translate it to English.</p>
+        </header>
+        <main>
+            <form id="translate-form">
+                <div class="file-input-wrapper">
+                    <input type="file" id="pdf-file" name="file" accept=".pdf" required>
+                    <label for="pdf-file" id="file-label">Click to select a PDF file</label>
+                </div>
+                <button type="submit" id="submit-btn">Translate</button>
+            </form>
+            <div id="status"></div>
+        </main>
+        <footer>
+            <p>Powered by FastAPI & Open-Source OCR/Translation</p>
+        </footer>
+    </div>
+
+    <script>
+        const form = document.getElementById('translate-form');
+        const fileInput = document.getElementById('pdf-file');
+        const fileLabel = document.getElementById('file-label');
+        const submitBtn = document.getElementById('submit-btn');
+        const statusDiv = document.getElementById('status');
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) {
+                fileLabel.textContent = fileInput.files[0].name;
+            } else {
+                fileLabel.textContent = 'Click to select a PDF file';
+            }
+        });
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            if (!fileInput.files[0]) {
+                statusDiv.textContent = 'Please select a file first.';
+                statusDiv.className = 'error';
+                return;
+            }
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Translating...';
+            statusDiv.textContent = 'Processing your PDF. This may take a few minutes...';
+            statusDiv.className = 'info';
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                const response = await fetch('/translate-pdf/?target_lang=en', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || `HTTP error! Status: ${response.status}`);
+                }
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = `translated_${fileInput.files[0].name}`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                
+                statusDiv.textContent = 'Translation successful! Your download has started.';
+                statusDiv.className = 'success';
+
+            } catch (error) {
+                console.error('Translation failed:', error);
+                statusDiv.textContent = `Error: ${error.message}`;
+                statusDiv.className = 'error';
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Translate';
+            }
+        });
+    </script>
+</body>
+</html>
