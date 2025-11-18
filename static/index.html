@@ -10,13 +10,20 @@
     <div class="container">
         <header>
             <h1>🕌 Tarjim PDF Translator</h1>
-            <p>Upload an Arabic PDF to translate it to English.</p>
+            <p>Upload an Arabic PDF to translate it into your chosen language.</p>
         </header>
         <main>
             <form id="translate-form">
                 <div class="file-input-wrapper">
                     <input type="file" id="pdf-file" name="file" accept=".pdf" required>
                     <label for="pdf-file" id="file-label">Click to select a PDF file</label>
+                </div>
+                <div class="language-selector">
+                    <label for="target-lang">Translate to:</label>
+                    <select id="target-lang" name="target_lang">
+                        <option value="en" selected>English</option>
+                        <option value="id">Indonesian</option>
+                    </select>
                 </div>
                 <button type="submit" id="submit-btn">Translate</button>
             </form>
@@ -33,6 +40,7 @@
         const fileLabel = document.getElementById('file-label');
         const submitBtn = document.getElementById('submit-btn');
         const statusDiv = document.getElementById('status');
+        const langSelect = document.getElementById('target-lang');
 
         fileInput.addEventListener('change', () => {
             if (fileInput.files.length > 0) {
@@ -59,8 +67,10 @@
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
 
+            const selectedLang = langSelect.value;
+
             try {
-                const response = await fetch('/translate-pdf/?target_lang=en', {
+                const response = await fetch(`/translate-pdf/?target_lang=${selectedLang}`, {
                     method: 'POST',
                     body: formData,
                 });

@@ -56,6 +56,25 @@ header p {
     background-color: #ebf8ff;
 }
 
+.language-selector {
+    margin-bottom: 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+}
+
+.language-selector label {
+    color: #4a5568;
+    font-weight: 500;
+}
+
+.language-selector select {
+    padding: 0.5rem;
+    border-radius: 6px;
+    border: 1px solid #cbd5e0;
+}
+
 button {
     width: 100%;
     padding: 0.8rem;

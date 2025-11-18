@@ -18,7 +18,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Download Argos Translate models
-RUN python -c "from argostranslate import package; package.update_package_index(); available_packages = package.get_available_packages(); package.install_from_path(next(filter(lambda x: x.from_code == 'ar' and x.to_code == 'en', available_packages)).download())"
+RUN python -c "from argostranslate import package; \
+    package.update_package_index(); \
+    available_packages = package.get_available_packages(); \
+    for lang_code in ['en', 'id']: \
+        package_to_install = next(filter(lambda x: x.from_code == 'ar' and x.to_code == lang_code, available_packages), None); \
+        if package_to_install: \
+            package.install_from_path(package_to_install.download())"
 
 # Copy application code
 COPY ./src /app/src
