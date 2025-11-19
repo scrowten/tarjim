@@ -1,4 +1,8 @@
-# 🕌 Tarjim: PDF Arabic OCR & Translator [In Development]
+<div align="center">
+  <img src="docs/logo.png" alt="Tarjim Logo" width="150">
+</div>
+
+# 🕌 Tarjim: PDF Arabic OCR & Translator
 End-to-end pipeline to **extract Arabic text from PDF**, **translate it**, and **generate a new translated PDF** — all using open-source tools.
 
 ---
