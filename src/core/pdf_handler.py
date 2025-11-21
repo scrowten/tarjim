@@ -1,4 +1,6 @@
 import os
+import argparse
+import logging
 import pymupdf
 from PIL import Image, ImageDraw
 import io
@@ -8,6 +10,9 @@ from .image_processor import preprocess_image_for_ocr
 from .ocr import perform_ocr_on_image
 from .translate import translate_text
 from .utils import overlay_text
+
+logger = logging.getLogger(__name__)
+
 
 def read_pdf_pages(pdf_path: str) -> Generator[pymupdf.Page, None, None]:
     """
@@ -19,20 +24,30 @@ def read_pdf_pages(pdf_path: str) -> Generator[pymupdf.Page, None, None]:
         yield from doc
         doc.close()
     except Exception as e:
-        print(f"Error opening or reading PDF {pdf_path}: {e}")
+        logger.error("Error opening or reading PDF %s: %s", pdf_path, e)
         return
 
 def convert_page_to_image(page: pymupdf.Page, dpi: int = 300) -> Image.Image:
-    """Converts a PyMuPDF page object to a PIL Image."""
-    pix = page.get_pixmap(dpi=dpi)
+    """Converts a PyMuPDF page object to a PIL Image.
+
+    Uses a transformation matrix based on DPI to render at the requested
+    resolution. Calling `page.get_pixmap` with a matrix keeps the page
+    rendering logic correct for the PyMuPDF API and avoids passing
+    unsupported keyword arguments like `dpi`.
+    """
+    # create a scaling matrix: PDF units are 72 dpi baseline
+    zoom = dpi / 72.0
+    matrix = pymupdf.Matrix(zoom, zoom)
+
+    pix = page.get_pixmap(matrix=matrix)
     img_data = pix.tobytes("png")
-    image = Image.open(io.BytesIO(img_data))
+    image = Image.open(io.BytesIO(img_data)).convert("RGBA")
     return image
 
 def save_images_to_pdf(images: List[Image.Image], output_path: str, resolution: float = 300.0):
     """Saves a list of PIL Images to a single PDF file."""
     if not images:
-        print("Warning: No images to save to PDF.")
+        logger.warning("No images to save to PDF.")
         return
 
     images[0].save(output_path, save_all=True, append_images=images[1:], resolution=resolution)
@@ -67,7 +82,7 @@ def process_pdf(input_path: str, output_path: str, target_lang: str = "en"):
     6. Saves the modified images as a new PDF.
     """
     if not os.path.exists(input_path):
-        print(f"Error: Input file not found at '{input_path}'")
+        logger.error("Input file not found at '%s'", input_path)
         return
 
     font_path = _find_system_font()
@@ -77,14 +92,21 @@ def process_pdf(input_path: str, output_path: str, target_lang: str = "en"):
             "Please install a common font like DejaVu Sans or Arial, or specify a font path."
         )
 
-    print(f"Processing PDF: {input_path}")
+    logger.info("Processing PDF: %s", input_path)
     modified_images = []
     
-    pdf_pages = list(read_pdf_pages(input_path))
-    total_pages = len(pdf_pages)
+    # Open the document once and iterate pages while the document is open.
+    try:
+        doc = pymupdf.open(input_path)
+    except Exception as e:
+        logger.error("Error opening PDF %s: %s", input_path, e)
+        return
 
-    for i, page in enumerate(pdf_pages):
-        print(f"--- Processing Page {i+1}/{total_pages} ---")
+    total_pages = doc.page_count
+
+    for i in range(total_pages):
+        logger.info("Processing page %d/%d", i+1, total_pages)
+        page = doc.load_page(i)
 
         # 1. Convert page to image
         image = convert_page_to_image(page)
@@ -110,6 +132,46 @@ def process_pdf(input_path: str, output_path: str, target_lang: str = "en"):
 
         modified_images.append(image)
 
+    # Close document handle
+    try:
+        doc.close()
+    except Exception:
+        logger.debug("Exception while closing document", exc_info=True)
+
     # 5. Save the result
+    # Ensure output path ends with .pdf
+    if not output_path.lower().endswith('.pdf'):
+        output_path = output_path + '.pdf'
+
+    # Ensure parent directory exists
+    parent_dir = os.path.dirname(output_path)
+    if parent_dir and not os.path.exists(parent_dir):
+        os.makedirs(parent_dir, exist_ok=True)
+
     save_images_to_pdf(modified_images, output_path)
-    print(f"Successfully saved translated PDF to {output_path}")
+    logger.info("Successfully saved translated PDF to %s", output_path)
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Translate PDF pages (OCR + translate + overlay)")
+    parser.add_argument("input", help="Path to input PDF file")
+    parser.add_argument("output", help="Path to output PDF file or base path ('.pdf' will be appended if missing)")
+    parser.add_argument("--target-lang", default="en", help="Target language code for translation (default: en)")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (DEBUG)")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+
+    # Configure logging
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    logger.debug("Starting process with args: %s", args)
+
+    process_pdf(args.input, args.output, target_lang=args.target_lang)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
