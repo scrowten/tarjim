@@ -1,5 +1,15 @@
+"""
+Tests for the tarjim PDF handler module.
+
+Tests cover:
+- PDF page to image conversion (with matrix/DPI)
+- Full process_pdf pipeline (with mocked OCR/translation)
+- Output path normalization (.pdf suffix, parent dir creation)
+"""
+
 import io
 import os
+from unittest.mock import MagicMock
 from PIL import Image
 import pytest
 
@@ -25,17 +35,19 @@ class FakePage:
         self.called = {}
 
     def get_pixmap(self, matrix=None):
-        # record the matrix used
         self.called['matrix'] = matrix
-        # produce a tiny PNG
         img = Image.new('RGBA', (10, 10), (255, 0, 0, 255))
         b = io.BytesIO()
         img.save(b, format='PNG')
         return FakePixmap(b.getvalue())
 
 
+# ===========================
+# Test: convert_page_to_image
+# ===========================
+
 def test_convert_page_to_image_uses_matrix(monkeypatch):
-    # Replace pymupdf.Matrix used inside the module with our FakeMatrix
+    """Verify that convert_page_to_image correctly applies DPI-based matrix."""
     fake_pymupdf = type('M', (), {'Matrix': FakeMatrix})
     monkeypatch.setattr(pdf_handler, 'pymupdf', fake_pymupdf)
 
@@ -50,45 +62,62 @@ def test_convert_page_to_image_uses_matrix(monkeypatch):
     assert page.called['matrix'].a == pytest.approx(2.0)
 
 
+# ===========================
+# Test: process_pdf (full pipeline, mocked)
+# ===========================
+
+class FakeTextLine:
+    """Mimics a Surya OCR text_line object."""
+    def __init__(self, text, bbox):
+        self.text = text
+        self.bbox = bbox
+
+
+class FakePagePrediction:
+    """Mimics a Surya OCR page prediction."""
+    def __init__(self, text_lines):
+        self.text_lines = text_lines
+
+
 def test_process_pdf_appends_pdf_and_creates_parent_dir(tmp_path, monkeypatch):
-    # prepare a minimal input file
+    """Test that process_pdf:
+    - Appends .pdf to output path if missing
+    - Creates parent directory if it doesn't exist
+    - Processes the correct number of pages
+    """
     input_pdf = tmp_path / 'input.pdf'
     input_pdf.write_bytes(b'%PDF-1.4\n%EOF')
-
-    # choose an output base path without .pdf and inside a non-existing directory
     output_base = tmp_path / 'outdir' / 'outfile'
 
-    # fake document returned by pymupdf.open
-    class FakeDoc:
-        page_count = 1
+    # Mock pdf_to_images to return a simple image
+    def fake_pdf_to_images(path, dpi=300):
+        return [Image.new('RGB', (100, 100), 'white')]
 
-        def load_page(self, i):
-            return FakePage()
+    monkeypatch.setattr(pdf_handler, 'pdf_to_images', fake_pdf_to_images)
 
-        def close(self):
-            pass
+    # Mock Surya OCR initialization and execution
+    mock_rec = MagicMock()
+    mock_det = MagicMock()
+    monkeypatch.setattr(pdf_handler, 'init_surya_ocr', lambda: (mock_rec, mock_det))
 
-    fake_pymupdf = type('M', (), {'open': lambda p: FakeDoc(), 'Matrix': FakeMatrix})
-    monkeypatch.setattr(pdf_handler, 'pymupdf', fake_pymupdf)
+    # Mock run_ocr_on_page to return a fake prediction with one text line
+    fake_prediction = FakePagePrediction([
+        FakeTextLine("مرحبا", (10, 10, 90, 30)),
+    ])
+    monkeypatch.setattr(pdf_handler, 'run_ocr_on_page', lambda img, rec, det: fake_prediction)
 
-    # stub out image preprocessing / OCR / translation / overlay to keep test focused
-    monkeypatch.setattr(pdf_handler, 'preprocess_image_for_ocr', lambda img: img)
+    # Mock Argos translation setup and translate
+    monkeypatch.setattr(pdf_handler, 'setup_argos_translation', lambda **kw: None)
+    monkeypatch.setattr(pdf_handler, 'translate_text', lambda t, from_code='ar', to_code='en': 'hello')
 
-    def fake_perform(img, lang='ara'):
-        return {
-            'level': [1],
-            'conf': ['90'],
-            'text': ['hello'],
-            'left': [1],
-            'top': [1],
-            'width': [10],
-            'height': [10],
-        }
+    # Mock overlay to return the image unchanged
+    monkeypatch.setattr(
+        pdf_handler,
+        'overlay_translations_on_image',
+        lambda **kw: kw.get('image', Image.new('RGB', (100, 100), 'white')),
+    )
 
-    monkeypatch.setattr(pdf_handler, 'perform_ocr_on_image', fake_perform)
-    monkeypatch.setattr(pdf_handler, 'translate_text', lambda t, target_language=None: 'translated')
-    monkeypatch.setattr(pdf_handler, 'overlay_text', lambda draw, txt, xy, wh, font: None)
-
+    # Capture save call
     captured = {}
 
     def fake_save(images, out_path, resolution=300.0):
@@ -97,7 +126,7 @@ def test_process_pdf_appends_pdf_and_creates_parent_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pdf_handler, 'save_images_to_pdf', fake_save)
 
-    # run
+    # Run the pipeline
     pdf_handler.process_pdf(str(input_pdf), str(output_base), target_lang='en')
 
     assert 'out_path' in captured
@@ -105,3 +134,39 @@ def test_process_pdf_appends_pdf_and_creates_parent_dir(tmp_path, monkeypatch):
     parent = os.path.dirname(captured['out_path'])
     assert os.path.exists(parent)
     assert captured['num_images'] == 1
+
+
+def test_process_pdf_missing_input(tmp_path, monkeypatch, caplog):
+    """Test that process_pdf handles missing input file gracefully."""
+    fake_input = str(tmp_path / 'nonexistent.pdf')
+    output = str(tmp_path / 'output.pdf')
+
+    pdf_handler.process_pdf(fake_input, output)
+
+    # Should log an error, not crash
+    assert any("not found" in r.message.lower() for r in caplog.records)
+
+
+# ===========================
+# Test: save_images_to_pdf
+# ===========================
+
+def test_save_images_to_pdf(tmp_path):
+    """Test that save_images_to_pdf creates a valid file."""
+    images = [
+        Image.new('RGB', (100, 100), 'red'),
+        Image.new('RGB', (100, 100), 'blue'),
+    ]
+    output_path = str(tmp_path / 'test_output.pdf')
+
+    pdf_handler.save_images_to_pdf(images, output_path)
+
+    assert os.path.exists(output_path)
+    assert os.path.getsize(output_path) > 0
+
+
+def test_save_images_to_pdf_empty(tmp_path):
+    """Test that save_images_to_pdf handles empty list gracefully."""
+    output_path = str(tmp_path / 'empty_output.pdf')
+    pdf_handler.save_images_to_pdf([], output_path)
+    assert not os.path.exists(output_path)

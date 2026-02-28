@@ -1,9 +1,44 @@
-# Examples
-examples/
-
-src/__pycache__/
-src/core/__pycache__/
-
-tests/__pycache__/
-
+# Python
 __pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Models cache (downloaded on first run)
+*.pt
+*.bin
+*.safetensors
+
+# Temporary/output files
+*.tmp
+output/
+temp/
+
+# Notebooks output
+notebooks/output/
+
+# Keep examples in repo
+# examples/

@@ -1,18 +1,32 @@
+"""
+PDF handler for the tarjim translation pipeline.
+
+Orchestrates the full pipeline:
+  PDF → images (PyMuPDF) → OCR (Surya) → translate (Argos) → overlay → save PDF
+
+Keeps PDF I/O utilities (read, convert, save) and the main process_pdf() orchestrator.
+"""
+
 import os
 import argparse
 import logging
-import pymupdf
-from PIL import Image, ImageDraw
 import io
-from typing import List, Generator
+from typing import List, Generator, Optional
 
-from .image_processor import preprocess_image_for_ocr
-from .ocr import perform_ocr_on_image
-from .translate import translate_text
-from .utils import overlay_text
+import pymupdf
+from PIL import Image
+from tqdm import tqdm
+
+from .ocr_surya import init_surya_ocr, run_ocr_on_page
+from .translator_argos import setup_argos_translation, translate_text, get_translation_route
+from .utils import overlay_translations_on_image, find_system_font
 
 logger = logging.getLogger(__name__)
 
+
+# ===========================
+# PDF I/O utilities
+# ===========================
 
 def read_pdf_pages(pdf_path: str) -> Generator[pymupdf.Page, None, None]:
     """
@@ -27,15 +41,13 @@ def read_pdf_pages(pdf_path: str) -> Generator[pymupdf.Page, None, None]:
         logger.error("Error opening or reading PDF %s: %s", pdf_path, e)
         return
 
+
 def convert_page_to_image(page: pymupdf.Page, dpi: int = 300) -> Image.Image:
     """Converts a PyMuPDF page object to a PIL Image.
 
     Uses a transformation matrix based on DPI to render at the requested
-    resolution. Calling `page.get_pixmap` with a matrix keeps the page
-    rendering logic correct for the PyMuPDF API and avoids passing
-    unsupported keyword arguments like `dpi`.
+    resolution.
     """
-    # create a scaling matrix: PDF units are 72 dpi baseline
     zoom = dpi / 72.0
     matrix = pymupdf.Matrix(zoom, zoom)
 
@@ -44,101 +56,95 @@ def convert_page_to_image(page: pymupdf.Page, dpi: int = 300) -> Image.Image:
     image = Image.open(io.BytesIO(img_data)).convert("RGBA")
     return image
 
-def save_images_to_pdf(images: List[Image.Image], output_path: str, resolution: float = 300.0):
+
+def pdf_to_images(pdf_path: str, dpi: int = 300) -> List[Image.Image]:
+    """
+    Convert all pages of a PDF to PIL Images.
+
+    Args:
+        pdf_path: Path to the input PDF file.
+        dpi: Rendering resolution (default: 300).
+
+    Returns:
+        List of PIL Image objects, one per page.
+    """
+    doc = pymupdf.open(pdf_path)
+    zoom = dpi / 72.0
+    matrix = pymupdf.Matrix(zoom, zoom)
+
+    images: List[Image.Image] = []
+    for page_index in tqdm(range(len(doc)), desc="Rendering PDF pages"):
+        page = doc.load_page(page_index)
+        pix = page.get_pixmap(matrix=matrix, alpha=False)
+        mode = "RGBA" if pix.alpha else "RGB"
+        img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
+        images.append(img)
+
+    doc.close()
+    return images
+
+
+def save_images_to_pdf(
+    images: List[Image.Image],
+    output_path: str,
+    resolution: float = 300.0,
+):
     """Saves a list of PIL Images to a single PDF file."""
     if not images:
         logger.warning("No images to save to PDF.")
         return
 
-    images[0].save(output_path, save_all=True, append_images=images[1:], resolution=resolution)
+    # Convert all to RGB (PDF requirement)
+    images_rgb = [img.convert("RGB") for img in images]
 
-def _find_system_font() -> str:
-    """
-    Finds a suitable default font on the system for text overlay.
-    """
-    # For Linux
-    if os.path.exists("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
-        return "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    # For Windows
-    if os.path.exists("C:/Windows/Fonts/arial.ttf"):
-        return "C:/Windows/Fonts/arial.ttf"
-    # For macOS
-    if os.path.exists("/System/Library/Fonts/Supplemental/Arial.ttf"):
-        return "/System/Library/Fonts/Supplemental/Arial.ttf"
-    # Fallback if no common font is found
-    # Note: This will likely cause an error if no font is found.
-    # Consider bundling a font with your application for maximum portability.
-    return "arial.ttf"
+    first, *rest = images_rgb
+    first.save(
+        output_path,
+        "PDF",
+        resolution=resolution,
+        save_all=True,
+        append_images=rest,
+    )
 
-def process_pdf(input_path: str, output_path: str, target_lang: str = "en"):
-    """
-    Orchestrates the full PDF translation pipeline.
 
-    1. Reads a PDF and converts each page to an image.
-    2. Preprocesses the image for better OCR.
-    3. Performs OCR to extract Arabic text blocks.
-    4. Translates each text block.
-    5. Overlays the translated text onto the original image.
-    6. Saves the modified images as a new PDF.
+# ===========================
+# Main pipeline orchestrator
+# ===========================
+
+def process_pdf(
+    input_path: str,
+    output_path: str,
+    target_lang: str = "en",
+    source_lang: str = "ar",
+    dpi: int = 300,
+    overlay_mode: str = "replace",
+    font_path: Optional[str] = None,
+):
+    """
+    Orchestrate the full PDF translation pipeline.
+
+    Pipeline steps:
+        1. Set up Argos translation models (offline, ar → target_lang).
+        2. Convert PDF pages to images (PyMuPDF).
+        3. Initialize Surya OCR models.
+        4. For each page: OCR → translate → overlay translated text.
+        5. Save all modified images as a new PDF.
+
+    Args:
+        input_path: Path to the input Arabic PDF file.
+        output_path: Path to save the translated output PDF.
+        target_lang: Target language code (default: 'en' for English).
+        source_lang: Source language code (default: 'ar' for Arabic).
+        dpi: Rendering DPI for PDF → image conversion (default: 300).
+        overlay_mode: How to overlay translations:
+            - 'replace': White-box over original text, draw translation (default).
+            - 'clean': White background with only translated text.
+        font_path: Optional path to a .ttf font file for text rendering.
     """
     if not os.path.exists(input_path):
         logger.error("Input file not found at '%s'", input_path)
         return
 
-    font_path = _find_system_font()
-    if not os.path.exists(font_path):
-        raise FileNotFoundError(
-            f"Font file not found at '{font_path}'. "
-            "Please install a common font like DejaVu Sans or Arial, or specify a font path."
-        )
-
-    logger.info("Processing PDF: %s", input_path)
-    modified_images = []
-    
-    # Open the document once and iterate pages while the document is open.
-    try:
-        doc = pymupdf.open(input_path)
-    except Exception as e:
-        logger.error("Error opening PDF %s: %s", input_path, e)
-        return
-
-    total_pages = doc.page_count
-
-    for i in range(total_pages):
-        logger.info("Processing page %d/%d", i+1, total_pages)
-        page = doc.load_page(i)
-
-        # 1. Convert page to image
-        image = convert_page_to_image(page)
-
-        # 2. Preprocess for better OCR
-        processed_image = preprocess_image_for_ocr(image)
-
-        # 3. Perform OCR
-        ocr_data = perform_ocr_on_image(processed_image, lang='ara')
-
-        # 4. Translate and overlay text
-        draw = ImageDraw.Draw(image)
-        for j in range(len(ocr_data['level'])):
-            # Filter for actual words with a decent confidence score
-            if int(ocr_data['conf'][j]) > 40:
-                original_text = ocr_data['text'][j].strip()
-                if not original_text:
-                    continue
-
-                translated = translate_text(original_text, target_language=target_lang)
-                x, y, w, h = (ocr_data['left'][j], ocr_data['top'][j], ocr_data['width'][j], ocr_data['height'][j])
-                overlay_text(draw, translated, (x, y), (w, h), font_path)
-
-        modified_images.append(image)
-
-    # Close document handle
-    try:
-        doc.close()
-    except Exception:
-        logger.debug("Exception while closing document", exc_info=True)
-
-    # 5. Save the result
     # Ensure output path ends with .pdf
     if not output_path.lower().endswith('.pdf'):
         output_path = output_path + '.pdf'
@@ -148,16 +154,109 @@ def process_pdf(input_path: str, output_path: str, target_lang: str = "en"):
     if parent_dir and not os.path.exists(parent_dir):
         os.makedirs(parent_dir, exist_ok=True)
 
-    save_images_to_pdf(modified_images, output_path)
-    logger.info("Successfully saved translated PDF to %s", output_path)
+    # Resolve font
+    if font_path is None:
+        font_path = find_system_font()
 
+    logger.info("Processing PDF: %s", input_path)
+    logger.info("Target language: %s", target_lang)
+    logger.info("Overlay mode: %s", overlay_mode)
+
+    # Step 1: Set up Argos translation (auto-detects direct vs pivot route)
+    logger.info("Setting up Argos translation (%s → %s)...", source_lang, target_lang)
+    route = setup_argos_translation(from_code=source_lang, to_code=target_lang)
+    if route == "pivot:en":
+        logger.info(
+            "Translation route: %s → en → %s (pivot through English, "
+            "no direct package available)",
+            source_lang, target_lang,
+        )
+    else:
+        logger.info("Translation route: %s → %s (direct)", source_lang, target_lang)
+
+    # Step 2: Convert PDF to images
+    logger.info("Rendering PDF to images (DPI=%d)...", dpi)
+    page_images = pdf_to_images(input_path, dpi=dpi)
+    total_pages = len(page_images)
+    logger.info("Rendered %d pages.", total_pages)
+
+    # Step 3: Initialize Surya OCR
+    logger.info("Initializing Surya OCR...")
+    recognition_predictor, detection_predictor = init_surya_ocr()
+
+    # Step 4: OCR + translate + overlay for each page
+    translated_images: List[Image.Image] = []
+
+    for idx, img in enumerate(tqdm(page_images, desc="OCR + translate pages")):
+        logger.info("Processing page %d/%d", idx + 1, total_pages)
+
+        # Run Surya OCR
+        page_prediction = run_ocr_on_page(
+            img, recognition_predictor, detection_predictor
+        )
+
+        # Log detected lines
+        num_lines = len(page_prediction.text_lines) if page_prediction.text_lines else 0
+        logger.info("Page %d: detected %d text lines", idx + 1, num_lines)
+
+        # Overlay translations on the image
+        translated_img = overlay_translations_on_image(
+            image=img,
+            page_prediction=page_prediction,
+            translate_fn=translate_text,
+            from_code=source_lang,
+            to_code=target_lang,
+            font_path=font_path,
+            mode=overlay_mode,
+        )
+
+        translated_images.append(translated_img)
+
+    # Step 5: Save the result
+    if translated_images:
+        logger.info("Saving translated PDF to: %s", output_path)
+        save_images_to_pdf(translated_images, output_path, resolution=float(dpi))
+        logger.info("Translation complete! Saved %d pages.", len(translated_images))
+    else:
+        logger.warning("No pages were processed. Output PDF not created.")
+
+
+# ===========================
+# CLI entry point
+# ===========================
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Translate PDF pages (OCR + translate + overlay)")
+    parser = argparse.ArgumentParser(
+        description="Tarjim: Translate Arabic PDF documents using OCR + translation + overlay."
+    )
     parser.add_argument("input", help="Path to input PDF file")
-    parser.add_argument("output", help="Path to output PDF file or base path ('.pdf' will be appended if missing)")
-    parser.add_argument("--target-lang", default="en", help="Target language code for translation (default: en)")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (DEBUG)")
+    parser.add_argument("output", help="Path to output PDF file")
+    parser.add_argument(
+        "--target-lang", default="en",
+        help="Target language code for translation (default: en)",
+    )
+    parser.add_argument(
+        "--source-lang", default="ar",
+        help="Source language code (default: ar)",
+    )
+    parser.add_argument(
+        "--dpi", type=int, default=300,
+        help="Rendering DPI (default: 300)",
+    )
+    parser.add_argument(
+        "--overlay-mode",
+        choices=["replace", "clean"],
+        default="replace",
+        help="Overlay mode: 'replace' covers original text, 'clean' uses white background (default: replace)",
+    )
+    parser.add_argument(
+        "--font", default=None,
+        help="Path to a .ttf font file for text rendering",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true",
+        help="Enable verbose logging (DEBUG)",
+    )
     return parser.parse_args(argv)
 
 
@@ -166,11 +265,22 @@ def main(argv=None):
 
     # Configure logging
     level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     logger.debug("Starting process with args: %s", args)
 
-    process_pdf(args.input, args.output, target_lang=args.target_lang)
+    process_pdf(
+        input_path=args.input,
+        output_path=args.output,
+        target_lang=args.target_lang,
+        source_lang=args.source_lang,
+        dpi=args.dpi,
+        overlay_mode=args.overlay_mode,
+        font_path=args.font,
+    )
 
 
 if __name__ == "__main__":

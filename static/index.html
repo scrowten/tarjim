@@ -9,7 +9,7 @@
 <body>
     <div class="container">
         <header>
-            <h1>🕌 Tarjim PDF Translator</h1>
+            <h1>Tarjim PDF Translator</h1>
             <p>Upload an Arabic PDF to translate it into your chosen language.</p>
         </header>
         <main>
@@ -18,19 +18,39 @@
                     <input type="file" id="pdf-file" name="file" accept=".pdf" required>
                     <label for="pdf-file" id="file-label">Click to select a PDF file</label>
                 </div>
-                <div class="language-selector">
-                    <label for="target-lang">Translate to:</label>
-                    <select id="target-lang" name="target_lang">
-                        <option value="en" selected>English</option>
-                        <option value="id">Indonesian</option>
-                    </select>
+
+                <div class="options-row">
+                    <div class="language-selector">
+                        <label for="target-lang">Translate to:</label>
+                        <select id="target-lang" name="target_lang">
+                            <option value="en" selected>English</option>
+                            <option value="id">Indonesian (Bahasa)</option>
+                            <option value="ms">Malay</option>
+                            <option value="fr">French</option>
+                            <option value="de">German</option>
+                            <option value="es">Spanish</option>
+                            <option value="tr">Turkish</option>
+                            <option value="ur">Urdu</option>
+                        </select>
+                    </div>
+
+                    <div class="language-selector">
+                        <label for="overlay-mode">Overlay:</label>
+                        <select id="overlay-mode" name="overlay_mode">
+                            <option value="replace" selected>Replace text</option>
+                            <option value="clean">Clean (white bg)</option>
+                        </select>
+                    </div>
                 </div>
+
+                <div id="route-info" class="route-info"></div>
+
                 <button type="submit" id="submit-btn">Translate</button>
             </form>
             <div id="status"></div>
         </main>
         <footer>
-            <p>Powered by FastAPI & Open-Source OCR/Translation</p>
+            <p>Powered by Surya OCR + Argos Translate (fully offline)</p>
         </footer>
     </div>
 
@@ -41,12 +61,40 @@
         const submitBtn = document.getElementById('submit-btn');
         const statusDiv = document.getElementById('status');
         const langSelect = document.getElementById('target-lang');
+        const overlaySelect = document.getElementById('overlay-mode');
+        const routeInfo = document.getElementById('route-info');
+
+        // Translation route descriptions
+        const routeDescriptions = {
+            'en': 'Direct translation: Arabic \u2192 English',
+            'id': 'Pivot translation: Arabic \u2192 English \u2192 Indonesian',
+            'ms': 'Pivot translation: Arabic \u2192 English \u2192 Malay',
+            'fr': 'Pivot translation: Arabic \u2192 English \u2192 French',
+            'de': 'Pivot translation: Arabic \u2192 English \u2192 German',
+            'es': 'Pivot translation: Arabic \u2192 English \u2192 Spanish',
+            'tr': 'Pivot translation: Arabic \u2192 English \u2192 Turkish',
+            'ur': 'Pivot translation: Arabic \u2192 English \u2192 Urdu',
+        };
+
+        // Update route info when language changes
+        langSelect.addEventListener('change', () => {
+            const lang = langSelect.value;
+            const desc = routeDescriptions[lang] || `Translation: Arabic \u2192 ${lang}`;
+            routeInfo.textContent = desc;
+            routeInfo.style.display = 'block';
+        });
+
+        // Show initial route info
+        routeInfo.textContent = routeDescriptions[langSelect.value] || '';
+        routeInfo.style.display = routeInfo.textContent ? 'block' : 'none';
 
         fileInput.addEventListener('change', () => {
             if (fileInput.files.length > 0) {
                 fileLabel.textContent = fileInput.files[0].name;
+                fileLabel.classList.add('file-selected');
             } else {
                 fileLabel.textContent = 'Click to select a PDF file';
+                fileLabel.classList.remove('file-selected');
             }
         });
 
@@ -59,18 +107,24 @@
                 return;
             }
 
+            const selectedLang = langSelect.value;
+            const selectedOverlay = overlaySelect.value;
+
             submitBtn.disabled = true;
             submitBtn.textContent = 'Translating...';
-            statusDiv.textContent = 'Processing your PDF. This may take a few minutes...';
+
+            const langName = langSelect.options[langSelect.selectedIndex].text;
+            statusDiv.textContent = `Translating to ${langName}... This may take a few minutes per page.`;
             statusDiv.className = 'info';
 
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
-
-            const selectedLang = langSelect.value;
+            formData.append('target_lang', selectedLang);
+            formData.append('source_lang', 'ar');
+            formData.append('overlay_mode', selectedOverlay);
 
             try {
-                const response = await fetch(`/translate-pdf/?target_lang=${selectedLang}`, {
+                const response = await fetch('/translate-pdf/', {
                     method: 'POST',
                     body: formData,
                 });
@@ -85,12 +139,12 @@
                 const a = document.createElement('a');
                 a.style.display = 'none';
                 a.href = url;
-                a.download = `translated_${fileInput.files[0].name}`;
+                a.download = `translated_${selectedLang}_${fileInput.files[0].name}`;
                 document.body.appendChild(a);
                 a.click();
                 window.URL.revokeObjectURL(url);
-                
-                statusDiv.textContent = 'Translation successful! Your download has started.';
+
+                statusDiv.textContent = `Translation to ${langName} successful! Your download has started.`;
                 statusDiv.className = 'success';
 
             } catch (error) {
