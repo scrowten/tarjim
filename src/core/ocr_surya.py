@@ -17,6 +17,34 @@ _RECOGNITION_PREDICTOR = None
 _DETECTION_PREDICTOR = None
 
 
+def _patch_surya_transformers_compat() -> None:
+    """
+    Compatibility patch for surya-ocr 0.17.x with transformers 5.x.
+
+    In transformers 5.x, `pad_token_id` was removed from `PretrainedConfig`
+    (moved to GenerationConfig). However, transformers' own `modeling_utils.py`
+    still accesses `self.config.pad_token_id` directly (line 4363), which raises
+    `AttributeError: 'SuryaDecoderConfig' object has no attribute 'pad_token_id'`
+    because SuryaDecoderConfig extends PretrainedConfig and never defined it.
+
+    Fix: add `pad_token_id = None` to the SuryaDecoderConfig class. This tells
+    transformers "this model has no pad token", causing the padding check to
+    return early cleanly — which is the correct behavior for surya.
+
+    Tracked upstream: surya-ocr issue with transformers>=5.0.0
+    """
+    try:
+        from surya.common.surya.decoder.config import SuryaDecoderConfig
+        if not hasattr(SuryaDecoderConfig, "pad_token_id"):
+            SuryaDecoderConfig.pad_token_id = None
+            logger.debug(
+                "Applied surya-ocr/transformers-5.x compatibility patch "
+                "(added pad_token_id=None to SuryaDecoderConfig)"
+            )
+    except Exception:
+        pass  # Safe to ignore — patch is best-effort
+
+
 def init_surya_ocr():
     """
     Initialize and return Surya OCR predictors.
@@ -30,6 +58,9 @@ def init_surya_ocr():
 
     if _RECOGNITION_PREDICTOR is not None and _DETECTION_PREDICTOR is not None:
         return _RECOGNITION_PREDICTOR, _DETECTION_PREDICTOR
+
+    # Apply compatibility patch before importing surya models
+    _patch_surya_transformers_compat()
 
     logger.info("Initializing Surya OCR models (this may take a moment on first run)...")
 

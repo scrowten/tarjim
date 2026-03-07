@@ -103,11 +103,39 @@ Examples:
         help="Path to a .ttf font file for text rendering.",
     )
     parser.add_argument(
+        "--tashkeel",
+        action="store_true",
+        help=(
+            "Enable Arabic diacritization (tashkeel) before translation using CATT. "
+            "Adds harakat to undiacritized kitab text, improving translation accuracy. "
+            "Model weights (~300–600 MB) are downloaded on first use."
+        ),
+    )
+    parser.add_argument(
+        "--show-tashkeel",
+        action="store_true",
+        help=(
+            "Show diacritized Arabic text in the output PDF, stacked above the translation "
+            "within each text bounding box. Implies --tashkeel. "
+            "Requires an Arabic font (see docs for Amiri font setup)."
+        ),
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging (DEBUG).",
     )
     args = parser.parse_args()
+
+    # show_tashkeel implies tashkeel
+    if args.show_tashkeel and not args.tashkeel:
+        import warnings
+        warnings.warn(
+            "--show-tashkeel requires --tashkeel. Enabling tashkeel automatically.",
+            UserWarning,
+            stacklevel=1,
+        )
+        args.tashkeel = True
 
     # Configure logging
     level = logging.DEBUG if args.verbose else logging.INFO
@@ -116,11 +144,19 @@ Examples:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    # Display language info
+    # Display run info
     lang_name = LANGUAGE_PRESETS.get(args.lang, args.lang)
+    if args.tashkeel and args.show_tashkeel:
+        tashkeel_status = "enabled (show in PDF)"
+    elif args.tashkeel:
+        tashkeel_status = "enabled (silent — improves translation quality)"
+    else:
+        tashkeel_status = "disabled"
+
     print(f"Tarjim: Translating {args.input}")
     print(f"  Source: {args.source_lang} | Target: {args.lang} ({lang_name})")
     print(f"  Overlay: {args.overlay_mode} | DPI: {args.dpi}")
+    print(f"  Tashkeel: {tashkeel_status}")
     print()
 
     process_pdf(
@@ -131,6 +167,8 @@ Examples:
         dpi=args.dpi,
         overlay_mode=args.overlay_mode,
         font_path=args.font,
+        tashkeel=args.tashkeel,
+        show_tashkeel=args.show_tashkeel,
     )
     print(f"\nTranslated PDF saved to {args.output}")
 

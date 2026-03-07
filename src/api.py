@@ -95,6 +95,21 @@ async def translate_pdf_endpoint(
     target_lang: str = Form(default="en", description="Target language code (e.g., 'en', 'id')"),
     source_lang: str = Form(default="ar", description="Source language code (default: 'ar')"),
     overlay_mode: str = Form(default="replace", description="Overlay mode: 'replace' or 'clean'"),
+    tashkeel: bool = Form(
+        default=False,
+        description=(
+            "Enable Arabic diacritization (tashkeel) before translation. "
+            "Improves translation accuracy for undiacritized kitab text. "
+            "Uses CATT (trained on Shamela classical Arabic corpus)."
+        ),
+    ),
+    show_tashkeel: bool = Form(
+        default=False,
+        description=(
+            "Show diacritized Arabic text in the output PDF, stacked above the translation. "
+            "Requires tashkeel=true."
+        ),
+    ),
 ):
     """
     Upload a PDF, translate its content, and return the translated PDF.
@@ -102,9 +117,18 @@ async def translate_pdf_endpoint(
     Supports direct and pivot translation:
     - ar → en: direct translation
     - ar → id: automatically pivots through English (ar → en → id)
+
+    Optional tashkeel modes:
+    - tashkeel=true: diacritize Arabic before translation (better accuracy)
+    - tashkeel=true&show_tashkeel=true: also render diacritized Arabic in output PDF
     """
     temp_input_path = None
     temp_output_path = None
+
+    # show_tashkeel implies tashkeel
+    if show_tashkeel and not tashkeel:
+        tashkeel = True
+
     try:
         # Validate overlay mode
         if overlay_mode not in ("replace", "clean"):
@@ -121,8 +145,8 @@ async def translate_pdf_endpoint(
         temp_output_path = tempfile.mktemp(suffix=".pdf")
 
         logger.info(
-            "API request: translate %s → %s (overlay: %s)",
-            source_lang, target_lang, overlay_mode,
+            "API request: translate %s → %s (overlay: %s, tashkeel: %s, show_tashkeel: %s)",
+            source_lang, target_lang, overlay_mode, tashkeel, show_tashkeel,
         )
 
         # Run the translation pipeline
@@ -132,11 +156,14 @@ async def translate_pdf_endpoint(
             target_lang=target_lang,
             source_lang=source_lang,
             overlay_mode=overlay_mode,
+            tashkeel=tashkeel,
+            show_tashkeel=show_tashkeel,
         )
 
         # Build a descriptive filename
         lang_suffix = target_lang
-        output_filename = f"translated_{lang_suffix}_{file.filename}"
+        tashkeel_suffix = "_tashkeel" if tashkeel else ""
+        output_filename = f"translated_{lang_suffix}{tashkeel_suffix}_{file.filename}"
 
         return FileResponse(
             temp_output_path,

@@ -24,5 +24,14 @@ fastapi>=0.104.0
 uvicorn>=0.24.0
 python-multipart>=0.0.6
 
+# Tashkeel - Arabic diacritization (CATT, 2024 SOTA)
+# Trained on Shamela classical Arabic corpus (Tashkeela, 75M words, 97 kitab books)
+# Model weights (~300-600 MB) are downloaded on first use; subsequent runs are offline.
+catt-tashkeel
+
+# Arabic RTL text shaping and bidi reordering for PDF rendering
+arabic-reshaper>=3.0.0
+python-bidi>=0.4.2
+
 # Testing
 pytest>=7.4.0

@@ -119,6 +119,8 @@ def process_pdf(
     dpi: int = 300,
     overlay_mode: str = "replace",
     font_path: Optional[str] = None,
+    tashkeel: bool = False,
+    show_tashkeel: bool = False,
 ):
     """
     Orchestrate the full PDF translation pipeline.
@@ -127,8 +129,9 @@ def process_pdf(
         1. Set up Argos translation models (offline, ar → target_lang).
         2. Convert PDF pages to images (PyMuPDF).
         3. Initialize Surya OCR models.
-        4. For each page: OCR → translate → overlay translated text.
-        5. Save all modified images as a new PDF.
+        4. (Optional) Initialize CATT tashkeel model if tashkeel=True.
+        5. For each page: OCR → [tashkeel] → translate → overlay translated text.
+        6. Save all modified images as a new PDF.
 
     Args:
         input_path: Path to the input Arabic PDF file.
@@ -140,6 +143,10 @@ def process_pdf(
             - 'replace': White-box over original text, draw translation (default).
             - 'clean': White background with only translated text.
         font_path: Optional path to a .ttf font file for text rendering.
+        tashkeel: If True, diacritize Arabic text before translation using CATT.
+            Improves translation accuracy for undiacritized kitab text.
+        show_tashkeel: If True (requires tashkeel=True), render the diacritized
+            Arabic text in the output PDF above the translation.
     """
     if not os.path.exists(input_path):
         logger.error("Input file not found at '%s'", input_path)
@@ -161,6 +168,14 @@ def process_pdf(
     logger.info("Processing PDF: %s", input_path)
     logger.info("Target language: %s", target_lang)
     logger.info("Overlay mode: %s", overlay_mode)
+    if tashkeel:
+        logger.info(
+            "Tashkeel: enabled (CATT EncoderDecoder) — diacritizing Arabic before translation"
+        )
+        if show_tashkeel:
+            logger.info("Tashkeel: show mode — diacritized Arabic will appear in output PDF")
+    else:
+        logger.info("Tashkeel: disabled")
 
     # Step 1: Set up Argos translation (auto-detects direct vs pivot route)
     logger.info("Setting up Argos translation (%s → %s)...", source_lang, target_lang)
@@ -184,7 +199,15 @@ def process_pdf(
     logger.info("Initializing Surya OCR...")
     recognition_predictor, detection_predictor = init_surya_ocr()
 
-    # Step 4: OCR + translate + overlay for each page
+    # Step 4 (optional): Initialize CATT tashkeel model
+    tashkeel_fn = None
+    if tashkeel:
+        logger.info("Initializing CATT tashkeel model...")
+        from .tashkeel import init_tashkeel_model, restore_harakat
+        _tashkeel_model = init_tashkeel_model()
+        tashkeel_fn = lambda text: restore_harakat(text, model=_tashkeel_model)
+
+    # Step 5: OCR + [tashkeel] + translate + overlay for each page
     translated_images: List[Image.Image] = []
 
     for idx, img in enumerate(tqdm(page_images, desc="OCR + translate pages")):
@@ -199,7 +222,7 @@ def process_pdf(
         num_lines = len(page_prediction.text_lines) if page_prediction.text_lines else 0
         logger.info("Page %d: detected %d text lines", idx + 1, num_lines)
 
-        # Overlay translations on the image
+        # Overlay translations on the image (with optional tashkeel)
         translated_img = overlay_translations_on_image(
             image=img,
             page_prediction=page_prediction,
@@ -208,6 +231,8 @@ def process_pdf(
             to_code=target_lang,
             font_path=font_path,
             mode=overlay_mode,
+            tashkeel_fn=tashkeel_fn,
+            show_tashkeel=show_tashkeel,
         )
 
         translated_images.append(translated_img)

@@ -43,6 +43,22 @@
                     </div>
                 </div>
 
+                <div class="options-row tashkeel-row">
+                    <div class="tashkeel-group">
+                        <span class="tashkeel-label">Tashkeel (حركات):</span>
+                        <label class="checkbox-label" title="Diacritize Arabic text before translation using CATT. Improves translation accuracy for undiacritized kitab text.">
+                            <input type="checkbox" id="tashkeel" name="tashkeel">
+                            Enable
+                            <span class="hint">(better translation accuracy)</span>
+                        </label>
+                        <label class="checkbox-label" id="show-tashkeel-label" title="Show diacritized Arabic text in the output PDF, stacked above the translation.">
+                            <input type="checkbox" id="show-tashkeel" name="show_tashkeel" disabled>
+                            Show in PDF
+                            <span class="hint">(bilingual output)</span>
+                        </label>
+                    </div>
+                </div>
+
                 <div id="route-info" class="route-info"></div>
 
                 <button type="submit" id="submit-btn">Translate</button>
@@ -50,7 +66,7 @@
             <div id="status"></div>
         </main>
         <footer>
-            <p>Powered by Surya OCR + Argos Translate (fully offline)</p>
+            <p>Powered by Surya OCR + CATT Tashkeel + Argos Translate (fully offline)</p>
         </footer>
     </div>
 
@@ -63,6 +79,9 @@
         const langSelect = document.getElementById('target-lang');
         const overlaySelect = document.getElementById('overlay-mode');
         const routeInfo = document.getElementById('route-info');
+        const tashkeelCheckbox = document.getElementById('tashkeel');
+        const showTashkeelCheckbox = document.getElementById('show-tashkeel');
+        const showTashkeelLabel = document.getElementById('show-tashkeel-label');
 
         // Translation route descriptions
         const routeDescriptions = {
@@ -98,6 +117,17 @@
             }
         });
 
+        // Enable/disable "Show in PDF" based on "Enable Tashkeel" state
+        tashkeelCheckbox.addEventListener('change', () => {
+            const enabled = tashkeelCheckbox.checked;
+            showTashkeelCheckbox.disabled = !enabled;
+            showTashkeelLabel.style.opacity = enabled ? '1' : '0.4';
+            showTashkeelLabel.style.pointerEvents = enabled ? 'auto' : 'none';
+            if (!enabled) {
+                showTashkeelCheckbox.checked = false;
+            }
+        });
+
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -114,7 +144,8 @@
             submitBtn.textContent = 'Translating...';
 
             const langName = langSelect.options[langSelect.selectedIndex].text;
-            statusDiv.textContent = `Translating to ${langName}... This may take a few minutes per page.`;
+            const tashkeelNote = tashkeelCheckbox.checked ? ' (with Tashkeel — may take a bit longer)' : '';
+            statusDiv.textContent = `Translating to ${langName}${tashkeelNote}... This may take a few minutes per page.`;
             statusDiv.className = 'info';
 
             const formData = new FormData();
@@ -122,6 +153,8 @@
             formData.append('target_lang', selectedLang);
             formData.append('source_lang', 'ar');
             formData.append('overlay_mode', selectedOverlay);
+            formData.append('tashkeel', tashkeelCheckbox.checked);
+            formData.append('show_tashkeel', showTashkeelCheckbox.checked);
 
             try {
                 const response = await fetch('/translate-pdf/', {

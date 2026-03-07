@@ -4,11 +4,21 @@ Overlay and drawing utilities for the tarjim PDF translation pipeline.
 Provides text overlay, dynamic font sizing, word-wrapping, and
 high-level image overlay functions for placing translated text
 on PDF page images.
+
+Tashkeel (Arabic diacritization) support:
+    When tashkeel_fn is passed to overlay_translations_on_image(), each Arabic
+    text line is diacritized before translation for improved accuracy.
+    When show_tashkeel=True, the diacritized Arabic text is rendered in the
+    top portion of each bounding box (in blue, RTL), with the translation
+    rendered below it.
+
+    Arabic RTL rendering uses arabic_reshaper + python-bidi to correctly
+    shape and order Arabic characters for PIL rendering.
 """
 
 import os
 import logging
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -19,12 +29,26 @@ logger = logging.getLogger(__name__)
 # Font helpers
 # ===========================
 
-# Common font paths across platforms
+# Common font paths across platforms (for translated / Latin text)
 _FONT_SEARCH_PATHS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",      # Linux
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",  # Linux alt
     "/System/Library/Fonts/Supplemental/Arial.ttf",          # macOS
     "C:/Windows/Fonts/arial.ttf",                            # Windows
+]
+
+# Arabic-capable font paths (supports harakat / combining diacritical marks)
+# Amiri is ideal for classical Arabic (kitab). Download from:
+#   https://github.com/aliftype/amiri/releases → amiri-regular.ttf
+#   Place at: fonts/amiri-regular.ttf
+_ARABIC_FONT_SEARCH_PATHS = [
+    "fonts/amiri-regular.ttf",                               # Recommended: classical Arabic
+    "fonts/times.ttf",                                        # Bundled fallback
+    "/usr/share/fonts/truetype/amiri/Amiri-Regular.ttf",     # Linux (apt: fonts-amiri)
+    "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",  # Linux (Noto)
+    "/Library/Fonts/Arial Unicode.ttf",                      # macOS
+    "C:/Windows/Fonts/times.ttf",                            # Windows
+    "C:/Windows/Fonts/arial.ttf",                            # Windows fallback
 ]
 
 
@@ -38,6 +62,40 @@ def find_system_font() -> Optional[str]:
     for path in _FONT_SEARCH_PATHS:
         if os.path.exists(path):
             return path
+    return None
+
+
+def find_arabic_font() -> Optional[str]:
+    """
+    Find an Arabic-capable font file for RTL text rendering with harakat.
+
+    Checks bundled and system font paths in priority order. Amiri Regular
+    is the recommended choice for classical Arabic (kitab) text.
+
+    To get the best results, download Amiri Regular and place it at
+    fonts/amiri-regular.ttf (relative to the project root).
+
+    Returns:
+        Path to an Arabic-capable TTF font file, or None if none found.
+        When None is returned, show_tashkeel rendering is skipped gracefully.
+    """
+    # Resolve relative paths against the project root (two levels up from this file)
+    _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    for path in _ARABIC_FONT_SEARCH_PATHS:
+        # Try as absolute path first, then relative to project root
+        if os.path.exists(path):
+            return path
+        abs_path = os.path.join(_project_root, path)
+        if os.path.exists(abs_path):
+            return abs_path
+
+    logger.warning(
+        "No Arabic-capable font found. Diacritized Arabic text will not be "
+        "shown in the PDF. For best results, download Amiri Regular and place "
+        "it at fonts/amiri-regular.ttf. "
+        "See: https://github.com/aliftype/amiri/releases"
+    )
     return None
 
 
@@ -86,6 +144,101 @@ def get_dynamic_font(
     font_size = max(1, int(bbox_height * scale))
 
     return load_font(font_size, font_path)
+
+
+# ===========================
+# Arabic RTL text helpers
+# ===========================
+
+def _reshape_arabic(text: str) -> str:
+    """
+    Apply Arabic text shaping and bidi reordering for correct PIL rendering.
+
+    PIL draws characters left-to-right without Arabic shaping. This helper:
+      1. Reshapes Arabic characters so they connect properly (arabic_reshaper)
+      2. Applies the Unicode bidi algorithm to produce the visual display order
+         (python-bidi), converting RTL logical order to LTR rendering order.
+
+    Falls back to the original text if the libraries are not installed.
+
+    Args:
+        text: Logical-order Arabic string (as stored in Unicode).
+
+    Returns:
+        Visually-ordered, shaped string ready for PIL.ImageDraw.text().
+    """
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        reshaped = arabic_reshaper.reshape(text)
+        return get_display(reshaped)
+    except ImportError:
+        logger.debug(
+            "arabic_reshaper / python-bidi not installed. "
+            "Install them for correct Arabic rendering: "
+            "pip install arabic-reshaper python-bidi"
+        )
+        return text
+
+
+def draw_arabic_text_in_box(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    bbox: Tuple[float, float, float, float],
+    font: ImageFont.FreeTypeFont,
+    fill: str = "darkblue",
+) -> None:
+    """
+    Draw Arabic text right-aligned within a bounding box using RTL shaping.
+
+    Applies arabic_reshaper + python-bidi for correct visual rendering in PIL,
+    then right-aligns each word-wrapped line within the box.
+
+    Args:
+        draw: PIL ImageDraw object.
+        text: Arabic text to render (diacritized / with harakat).
+        bbox: Bounding box as (x1, y1, x2, y2).
+        font: PIL font object (should be an Arabic-capable TTF font).
+        fill: Text color (default: 'darkblue' to visually distinguish from translation).
+    """
+    x1, y1, x2, y2 = [int(v) for v in bbox]
+    max_width = x2 - x1
+    max_height = y2 - y1
+
+    if max_width <= 0 or max_height <= 0 or not text.strip():
+        return
+
+    # Shape and reorder for RTL rendering
+    display_text = _reshape_arabic(text)
+
+    # Word-wrap: split shaped text into lines that fit within max_width
+    words = display_text.split()
+    lines = []
+    current = ""
+
+    for w in words:
+        candidate = (current + " " + w).strip()
+        if draw.textlength(candidate, font=font) <= max_width:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            current = w
+    if current:
+        lines.append(current)
+
+    # Draw lines right-aligned within the bbox
+    ascent, descent = font.getmetrics()
+    line_height = ascent + descent + 2
+
+    y = y1
+    for line in lines:
+        if y + line_height > y2:
+            break
+        line_width = draw.textlength(line, font=font)
+        x_pos = x2 - int(line_width)  # right-align
+        draw.text((x_pos, y), line, font=font, fill=fill)
+        y += line_height
 
 
 # ===========================
@@ -193,9 +346,18 @@ def overlay_translations_on_image(
     to_code: str = "en",
     font_path: Optional[str] = None,
     mode: str = "replace",
+    tashkeel_fn: Optional[Callable[[str], str]] = None,
+    show_tashkeel: bool = False,
 ) -> Image.Image:
     """
     Overlay translated text onto a page image using Surya OCR predictions.
+
+    When tashkeel_fn is provided, each Arabic text line is diacritized before
+    translation, improving translation accuracy for undiacritized kitab text.
+
+    When show_tashkeel=True (requires tashkeel_fn), the diacritized Arabic text
+    is rendered in the top 40% of each bounding box (dark blue, RTL), with the
+    translation in the lower 60%. A light separator line divides the two.
 
     Args:
         image: Original page image (PIL Image).
@@ -204,16 +366,31 @@ def overlay_translations_on_image(
         translate_fn: Callable(text, from_code, to_code) -> translated_text.
         from_code: Source language code (default: 'ar').
         to_code: Target language code (default: 'en').
-        font_path: Optional path to a .ttf font file.
+        font_path: Optional path to a .ttf font file for translation text.
         mode: Overlay mode:
             - 'replace': White-box over original, draw translated text (default).
             - 'clean': White background with only translated text.
+        tashkeel_fn: Optional callable(text: str) -> diacritized_text.
+            When provided, Arabic text is diacritized before translation.
+        show_tashkeel: If True, render the diacritized Arabic text above the
+            translation within each bounding box. Requires tashkeel_fn.
 
     Returns:
-        New PIL Image with translated text overlaid.
+        New PIL Image with translated (and optionally diacritized) text overlaid.
     """
     if font_path is None:
         font_path = find_system_font()
+
+    # Resolve Arabic font once for the whole page (only needed if show_tashkeel)
+    arabic_font_path: Optional[str] = None
+    if show_tashkeel and tashkeel_fn is not None:
+        arabic_font_path = find_arabic_font()
+        if arabic_font_path is None:
+            logger.warning(
+                "show_tashkeel=True but no Arabic font found. "
+                "Diacritized Arabic text will not be rendered in the PDF. "
+                "Download Amiri Regular to fonts/amiri-regular.ttf to enable."
+            )
 
     if mode == "clean":
         # Start with a clean white image
@@ -226,6 +403,14 @@ def overlay_translations_on_image(
 
     draw = ImageDraw.Draw(result_image)
 
+    # Import tashkeel helper lazily (only when tashkeel is active)
+    _is_arabic_text = None
+    if tashkeel_fn is not None:
+        try:
+            from .tashkeel import is_arabic_text as _is_arabic_text
+        except ImportError:
+            pass
+
     text_lines = page_prediction.text_lines
     for line in text_lines:
         src_text = line.text
@@ -234,30 +419,67 @@ def overlay_translations_on_image(
         if not src_text or not src_text.strip():
             continue
 
-        # Translate the text
+        # --- Step 1: Tashkeel (diacritize) the Arabic text ---
+        diacritized = src_text
+        if tashkeel_fn is not None:
+            is_arabic = (_is_arabic_text(src_text) if _is_arabic_text else True)
+            if is_arabic:
+                try:
+                    diacritized = tashkeel_fn(src_text)
+                except Exception as exc:
+                    logger.warning("Tashkeel skipped for line: %s", exc)
+
+        # --- Step 2: Translate (use diacritized text for better accuracy) ---
         try:
-            translated = translate_fn(src_text, from_code=from_code, to_code=to_code)
+            translated = translate_fn(diacritized, from_code=from_code, to_code=to_code)
         except Exception as e:
             logger.warning("Translation failed for line '%s...': %s", src_text[:30], e)
             # Try pivoting through English if target isn't English
             if to_code != "en":
                 try:
-                    en_text = translate_fn(src_text, from_code=from_code, to_code="en")
+                    en_text = translate_fn(diacritized, from_code=from_code, to_code="en")
                     translated = translate_fn(en_text, from_code="en", to_code=to_code)
                 except Exception:
                     translated = src_text  # Keep original as last resort
             else:
                 translated = src_text
 
-        # In replace mode, cover original text with white box first
+        # --- Step 3: Cover original text box with white ---
         if mode == "replace":
             x1, y1, x2, y2 = [int(v) for v in bbox]
             draw.rectangle([x1, y1, x2, y2], fill="white", outline="white")
 
-        # Get a font sized to fit the bounding box
-        font = get_dynamic_font(bbox, font_path)
+        # --- Step 4: Render text ---
+        has_diacritized = diacritized != src_text
+        should_show_arabic = (
+            show_tashkeel
+            and tashkeel_fn is not None
+            and has_diacritized
+            and arabic_font_path is not None
+        )
 
-        # Draw translated text with word-wrapping
-        draw_text_in_box(draw, translated, bbox, font, fill="black")
+        if should_show_arabic:
+            # Split bbox: top 40% → diacritized Arabic, bottom 60% → translation
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+            height = y2 - y1
+            split_y = y1 + int(height * 0.40)
+
+            arabic_bbox = (x1, y1, x2, split_y)
+            trans_bbox = (x1, split_y, x2, y2)
+
+            # Draw a thin separator line between Arabic and translation
+            draw.line([(x1, split_y), (x2, split_y)], fill="lightgray", width=1)
+
+            # Render diacritized Arabic (RTL, dark blue) in top portion
+            arabic_font = get_dynamic_font(arabic_bbox, arabic_font_path, scale=0.75)
+            draw_arabic_text_in_box(draw, diacritized, arabic_bbox, arabic_font, fill="darkblue")
+
+            # Render translation in bottom portion
+            trans_font = get_dynamic_font(trans_bbox, font_path, scale=0.75)
+            draw_text_in_box(draw, translated, trans_bbox, trans_font, fill="black")
+        else:
+            # Standard rendering: translation fills the whole bbox
+            font = get_dynamic_font(bbox, font_path)
+            draw_text_in_box(draw, translated, bbox, font, fill="black")
 
     return result_image
