@@ -67,6 +67,46 @@ def _get_nllb_code(iso_code: str) -> str:
     )
 
 
+def _load_translator(ctranslate2, model_path: str):
+    """
+    Load CTranslate2 Translator, trying CUDA first then falling back to CPU.
+
+    CTranslate2 can detect CUDA devices but still fail to load if the required
+    CUDA runtime DLLs (e.g. cublas64_12.dll for CUDA 12) are not in PATH.
+    This wrapper catches that and retries on CPU automatically.
+    """
+    if ctranslate2.get_cuda_device_count() > 0:
+        try:
+            logger.info("Loading NLLB-200 on CUDA (int8_float16)...")
+            translator = ctranslate2.Translator(
+                model_path,
+                device="cuda",
+                compute_type="int8_float16",
+                inter_threads=1,
+            )
+            # Warm up with a dummy call to catch missing DLL errors early
+            translator.translate_batch([["a"]], target_prefix=[["b"]])
+            logger.info("NLLB-200 loaded on CUDA (~2.8 GB VRAM).")
+            return translator
+        except Exception as e:
+            logger.warning(
+                "CUDA load failed (%s). "
+                "Tip: install CUDA 12 toolkit or add CUDA bin dir to PATH. "
+                "Falling back to CPU (slower but correct).",
+                e,
+            )
+
+    logger.info("Loading NLLB-200 on CPU (int8)...")
+    translator = ctranslate2.Translator(
+        model_path,
+        device="cpu",
+        compute_type="int8",
+        inter_threads=4,   # use 4 threads for better CPU throughput
+    )
+    logger.info("NLLB-200 loaded on CPU.")
+    return translator
+
+
 def init_nllb_translator() -> Tuple:
     """
     Initialize and return (translator, tokenizer) for NLLB-200.
@@ -86,32 +126,24 @@ def init_nllb_translator() -> Tuple:
     from transformers import AutoTokenizer
     from huggingface_hub import snapshot_download
 
-    # CTranslate2 ships its own CUDA runtime — use its own device check,
-    # not torch.cuda.is_available() which may be False on CPU-only PyTorch builds.
-    device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
-    compute_type = "int8_float16" if device == "cuda" else "int8"
-
     logger.info(
         "Downloading/loading NLLB-200 CT2-INT8 model "
-        "(first run: ~3.2 GB download, ~2.8 GB VRAM)..."
+        "(first run: ~3.2 GB download)..."
     )
     ct2_model_path = snapshot_download(CT2_MODEL_ID)
 
-    logger.info(
-        "Loading NLLB-200 translator (device=%s, compute_type=%s)...",
-        device, compute_type,
-    )
-    _TRANSLATOR = ctranslate2.Translator(
-        ct2_model_path,
-        device=device,
-        compute_type=compute_type,
-        inter_threads=1,
-    )
+    # Try CUDA first (CTranslate2 has its own CUDA runtime, independent of PyTorch).
+    # Fall back to CPU if CUDA libraries (e.g. cublas64_12.dll) are missing or
+    # the wrong version — this happens when the system has CUDA 11 but CT2 needs CUDA 12.
+    _TRANSLATOR = _load_translator(ctranslate2, ct2_model_path)
 
     logger.info("Loading NLLB-200 tokenizer...")
     _TOKENIZER = AutoTokenizer.from_pretrained(TOKENIZER_MODEL_ID)
 
-    logger.info("NLLB-200 ready — direct translation for 200 language pairs.")
+    logger.info(
+        "NLLB-200 ready (device=%s) — direct translation for 200 language pairs.",
+        _TRANSLATOR.device,
+    )
     return _TRANSLATOR, _TOKENIZER
 
 
