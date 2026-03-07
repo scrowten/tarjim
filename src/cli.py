@@ -11,7 +11,6 @@ import logging
 import sys
 
 from .core.pdf_handler import process_pdf
-from .core.translator_argos import get_translation_route
 
 
 # Common language presets for user convenience
@@ -40,25 +39,25 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Supported target languages: {lang_help_lines}
-(Any Argos Translate language code is accepted.)
 
-Translation routing:
-  - Direct: used when a direct ar→<lang> package exists (e.g., ar→en)
-  - Pivot:  ar→en→<lang> when no direct package exists (e.g., ar→en→id)
-  The route is chosen automatically. Use --verbose to see which route is used.
+Translation backends:
+  --translator nllb   (default) NLLB-200 1.3B via CTranslate2 INT8.
+                      Direct translation for all 200 languages — no pivot.
+                      ~3.2 GB download on first use, ~2.8 GB VRAM.
+  --translator argos  Argos Translate — small, lower quality, no GPU needed.
 
 Examples:
-  # Arabic to English (direct)
+  # Arabic to English (NLLB, default)
   python -m src.cli -i kitab.pdf -o kitab_en.pdf --lang en
 
-  # Arabic to Indonesian (auto-pivot via English)
+  # Arabic to Indonesian (NLLB, direct — no English pivot)
   python -m src.cli -i kitab.pdf -o kitab_id.pdf --lang id
 
-  # Clean mode (white background, no original text visible)
-  python -m src.cli -i kitab.pdf -o kitab_en.pdf --lang en --overlay-mode clean
+  # Use Argos Translate instead (lightweight fallback)
+  python -m src.cli -i kitab.pdf -o kitab_en.pdf --lang en --translator argos
 
-  # High quality with verbose logging
-  python -m src.cli -i kitab.pdf -o kitab_id.pdf --lang id --dpi 400 --verbose
+  # Best quality: NLLB + tashkeel (diacritize before translate)
+  python -m src.cli -i kitab.pdf -o kitab_en.pdf --lang en --tashkeel
         """,
     )
     parser.add_argument(
@@ -121,6 +120,15 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--translator",
+        choices=["nllb", "argos"],
+        default="nllb",
+        help=(
+            "Translation backend: 'nllb' (default, higher quality, ~3.2 GB download) "
+            "or 'argos' (lightweight fallback, no GPU needed)."
+        ),
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging (DEBUG).",
@@ -153,8 +161,14 @@ Examples:
     else:
         tashkeel_status = "disabled"
 
+    translator_info = {
+        "nllb": "NLLB-200 1.3B (CTranslate2 INT8) — high quality, direct",
+        "argos": "Argos Translate — lightweight fallback",
+    }.get(args.translator, args.translator)
+
     print(f"Tarjim: Translating {args.input}")
     print(f"  Source: {args.source_lang} | Target: {args.lang} ({lang_name})")
+    print(f"  Translator: {translator_info}")
     print(f"  Overlay: {args.overlay_mode} | DPI: {args.dpi}")
     print(f"  Tashkeel: {tashkeel_status}")
     print()
@@ -169,6 +183,7 @@ Examples:
         font_path=args.font,
         tashkeel=args.tashkeel,
         show_tashkeel=args.show_tashkeel,
+        translator=args.translator,
     )
     print(f"\nTranslated PDF saved to {args.output}")
 

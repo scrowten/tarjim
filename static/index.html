@@ -43,6 +43,16 @@
                     </div>
                 </div>
 
+                <div class="options-row">
+                    <div class="language-selector">
+                        <label for="translator">Translator:</label>
+                        <select id="translator" name="translator">
+                            <option value="nllb" selected>NLLB-200 (high quality)</option>
+                            <option value="argos">Argos (lightweight)</option>
+                        </select>
+                    </div>
+                </div>
+
                 <div class="options-row tashkeel-row">
                     <div class="tashkeel-group">
                         <span class="tashkeel-label">Tashkeel (حركات):</span>
@@ -66,7 +76,7 @@
             <div id="status"></div>
         </main>
         <footer>
-            <p>Powered by Surya OCR + CATT Tashkeel + Argos Translate (fully offline)</p>
+            <p>Powered by Surya OCR + CATT Tashkeel + NLLB-200 (fully offline)</p>
         </footer>
     </div>
 
@@ -79,33 +89,46 @@
         const langSelect = document.getElementById('target-lang');
         const overlaySelect = document.getElementById('overlay-mode');
         const routeInfo = document.getElementById('route-info');
+        const translatorSelect = document.getElementById('translator');
         const tashkeelCheckbox = document.getElementById('tashkeel');
         const showTashkeelCheckbox = document.getElementById('show-tashkeel');
         const showTashkeelLabel = document.getElementById('show-tashkeel-label');
 
-        // Translation route descriptions
+        // Route descriptions per translator
         const routeDescriptions = {
-            'en': 'Direct translation: Arabic \u2192 English',
-            'id': 'Pivot translation: Arabic \u2192 English \u2192 Indonesian',
-            'ms': 'Pivot translation: Arabic \u2192 English \u2192 Malay',
-            'fr': 'Pivot translation: Arabic \u2192 English \u2192 French',
-            'de': 'Pivot translation: Arabic \u2192 English \u2192 German',
-            'es': 'Pivot translation: Arabic \u2192 English \u2192 Spanish',
-            'tr': 'Pivot translation: Arabic \u2192 English \u2192 Turkish',
-            'ur': 'Pivot translation: Arabic \u2192 English \u2192 Urdu',
+            nllb: {
+                'en': 'Direct: Arabic \u2192 English (NLLB-200)',
+                'id': 'Direct: Arabic \u2192 Indonesian (NLLB-200, no pivot)',
+                'ms': 'Direct: Arabic \u2192 Malay (NLLB-200)',
+                'fr': 'Direct: Arabic \u2192 French (NLLB-200)',
+                'de': 'Direct: Arabic \u2192 German (NLLB-200)',
+                'es': 'Direct: Arabic \u2192 Spanish (NLLB-200)',
+                'tr': 'Direct: Arabic \u2192 Turkish (NLLB-200)',
+                'ur': 'Direct: Arabic \u2192 Urdu (NLLB-200)',
+            },
+            argos: {
+                'en': 'Direct: Arabic \u2192 English (Argos)',
+                'id': 'Pivot: Arabic \u2192 English \u2192 Indonesian (Argos)',
+                'ms': 'Pivot: Arabic \u2192 English \u2192 Malay (Argos)',
+                'fr': 'Pivot: Arabic \u2192 English \u2192 French (Argos)',
+                'de': 'Pivot: Arabic \u2192 English \u2192 German (Argos)',
+                'es': 'Pivot: Arabic \u2192 English \u2192 Spanish (Argos)',
+                'tr': 'Pivot: Arabic \u2192 English \u2192 Turkish (Argos)',
+                'ur': 'Pivot: Arabic \u2192 English \u2192 Urdu (Argos)',
+            },
         };
 
-        // Update route info when language changes
-        langSelect.addEventListener('change', () => {
+        function updateRouteInfo() {
             const lang = langSelect.value;
-            const desc = routeDescriptions[lang] || `Translation: Arabic \u2192 ${lang}`;
+            const tr = translatorSelect.value;
+            const desc = (routeDescriptions[tr] || {})[lang] || `Arabic \u2192 ${lang}`;
             routeInfo.textContent = desc;
             routeInfo.style.display = 'block';
-        });
+        }
 
-        // Show initial route info
-        routeInfo.textContent = routeDescriptions[langSelect.value] || '';
-        routeInfo.style.display = routeInfo.textContent ? 'block' : 'none';
+        langSelect.addEventListener('change', updateRouteInfo);
+        translatorSelect.addEventListener('change', updateRouteInfo);
+        updateRouteInfo();
 
         fileInput.addEventListener('change', () => {
             if (fileInput.files.length > 0) {
@@ -153,6 +176,7 @@
             formData.append('target_lang', selectedLang);
             formData.append('source_lang', 'ar');
             formData.append('overlay_mode', selectedOverlay);
+            formData.append('translator', translatorSelect.value);
             formData.append('tashkeel', tashkeelCheckbox.checked);
             formData.append('show_tashkeel', showTashkeelCheckbox.checked);
 

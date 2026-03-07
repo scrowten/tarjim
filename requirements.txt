@@ -11,7 +11,13 @@ Pillow>=10.0.0
 surya-ocr>=0.9.0
 transformers>=4.57.6,<5.0.0
 
-# Translation - Argos Translate (fully offline)
+# Translation - NLLB-200 (primary, 3-5x better quality than Argos)
+# CTranslate2 runtime for fast INT8 inference on GPU/CPU
+ctranslate2>=4.0.0
+# sentencepiece for NLLB tokenizer
+sentencepiece>=0.1.99
+
+# Translation - Argos Translate (fallback / lightweight option)
 argostranslate>=1.9.0
 
 # Image processing

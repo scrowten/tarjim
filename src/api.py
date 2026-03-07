@@ -20,7 +20,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .core.pdf_handler import process_pdf
-from .core.translator_argos import get_translation_route, get_supported_languages
+from .core.translator_nllb import get_translation_route as nllb_route
+from .core.translator_argos import get_translation_route as argos_route, get_supported_languages
 
 logger = logging.getLogger(__name__)
 
@@ -54,32 +55,37 @@ async def read_root():
 
 
 @app.get("/api/languages")
-async def list_languages():
+async def list_languages(translator: str = Query(default="nllb")):
     """List available target languages and their translation routes from Arabic."""
-    # Common targets with their route info
     common_targets = [
-        {"code": "en", "name": "English", "route": "direct"},
-        {"code": "id", "name": "Indonesian", "route": "pivot:en"},
-        {"code": "ms", "name": "Malay", "route": "pivot:en"},
-        {"code": "fr", "name": "French", "route": "pivot:en"},
-        {"code": "de", "name": "German", "route": "pivot:en"},
-        {"code": "es", "name": "Spanish", "route": "pivot:en"},
-        {"code": "tr", "name": "Turkish", "route": "pivot:en"},
-        {"code": "ur", "name": "Urdu", "route": "pivot:en"},
+        {"code": "en", "name": "English"},
+        {"code": "id", "name": "Indonesian"},
+        {"code": "ms", "name": "Malay"},
+        {"code": "fr", "name": "French"},
+        {"code": "de", "name": "German"},
+        {"code": "es", "name": "Spanish"},
+        {"code": "tr", "name": "Turkish"},
+        {"code": "ur", "name": "Urdu"},
     ]
-    return JSONResponse(content={"languages": common_targets})
+    route_fn = nllb_route if translator == "nllb" else argos_route
+    for lang in common_targets:
+        lang["route"] = route_fn("ar", lang["code"])
+    return JSONResponse(content={"languages": common_targets, "translator": translator})
 
 
 @app.get("/api/route")
 async def check_route(
     source: str = Query(default="ar", description="Source language code"),
     target: str = Query(description="Target language code"),
+    translator: str = Query(default="nllb", description="Translator backend"),
 ):
     """Check the translation route for a language pair."""
-    route = get_translation_route(source, target)
+    route_fn = nllb_route if translator == "nllb" else argos_route
+    route = route_fn(source, target)
     return JSONResponse(content={
         "source": source,
         "target": target,
+        "translator": translator,
         "route": route,
         "description": {
             "direct": f"Direct translation: {source} → {target}",
@@ -95,6 +101,10 @@ async def translate_pdf_endpoint(
     target_lang: str = Form(default="en", description="Target language code (e.g., 'en', 'id')"),
     source_lang: str = Form(default="ar", description="Source language code (default: 'ar')"),
     overlay_mode: str = Form(default="replace", description="Overlay mode: 'replace' or 'clean'"),
+    translator: str = Form(
+        default="nllb",
+        description="Translation backend: 'nllb' (default, higher quality) or 'argos' (lightweight fallback).",
+    ),
     tashkeel: bool = Form(
         default=False,
         description=(
@@ -145,8 +155,8 @@ async def translate_pdf_endpoint(
         temp_output_path = tempfile.mktemp(suffix=".pdf")
 
         logger.info(
-            "API request: translate %s → %s (overlay: %s, tashkeel: %s, show_tashkeel: %s)",
-            source_lang, target_lang, overlay_mode, tashkeel, show_tashkeel,
+            "API request: translate %s → %s (translator: %s, overlay: %s, tashkeel: %s, show_tashkeel: %s)",
+            source_lang, target_lang, translator, overlay_mode, tashkeel, show_tashkeel,
         )
 
         # Run the translation pipeline
@@ -158,12 +168,14 @@ async def translate_pdf_endpoint(
             overlay_mode=overlay_mode,
             tashkeel=tashkeel,
             show_tashkeel=show_tashkeel,
+            translator=translator,
         )
 
         # Build a descriptive filename
         lang_suffix = target_lang
         tashkeel_suffix = "_tashkeel" if tashkeel else ""
-        output_filename = f"translated_{lang_suffix}{tashkeel_suffix}_{file.filename}"
+        translator_suffix = f"_{translator}" if translator != "nllb" else ""
+        output_filename = f"translated_{lang_suffix}{tashkeel_suffix}{translator_suffix}_{file.filename}"
 
         return FileResponse(
             temp_output_path,

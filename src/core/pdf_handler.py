@@ -18,7 +18,6 @@ from PIL import Image
 from tqdm import tqdm
 
 from .ocr_surya import init_surya_ocr, run_ocr_on_page
-from .translator_argos import setup_argos_translation, translate_text, get_translation_route
 from .utils import overlay_translations_on_image, find_system_font
 
 logger = logging.getLogger(__name__)
@@ -121,6 +120,7 @@ def process_pdf(
     font_path: Optional[str] = None,
     tashkeel: bool = False,
     show_tashkeel: bool = False,
+    translator: str = "nllb",
 ):
     """
     Orchestrate the full PDF translation pipeline.
@@ -147,6 +147,10 @@ def process_pdf(
             Improves translation accuracy for undiacritized kitab text.
         show_tashkeel: If True (requires tashkeel=True), render the diacritized
             Arabic text in the output PDF above the translation.
+        translator: Translation backend to use:
+            - 'nllb' (default): NLLB-200 1.3B via CTranslate2 INT8. Better quality,
+              direct ar→id, ~2.8 GB VRAM. Downloads ~3.2 GB on first use.
+            - 'argos': Argos Translate (small, fast, lower quality, fully offline).
     """
     if not os.path.exists(input_path):
         logger.error("Input file not found at '%s'", input_path)
@@ -166,7 +170,7 @@ def process_pdf(
         font_path = find_system_font()
 
     logger.info("Processing PDF: %s", input_path)
-    logger.info("Target language: %s", target_lang)
+    logger.info("Target language: %s | Translator: %s", target_lang, translator)
     logger.info("Overlay mode: %s", overlay_mode)
     if tashkeel:
         logger.info(
@@ -177,17 +181,23 @@ def process_pdf(
     else:
         logger.info("Tashkeel: disabled")
 
-    # Step 1: Set up Argos translation (auto-detects direct vs pivot route)
-    logger.info("Setting up Argos translation (%s → %s)...", source_lang, target_lang)
-    route = setup_argos_translation(from_code=source_lang, to_code=target_lang)
-    if route == "pivot:en":
-        logger.info(
-            "Translation route: %s → en → %s (pivot through English, "
-            "no direct package available)",
-            source_lang, target_lang,
-        )
+    # Step 1: Set up translation backend
+    if translator == "nllb":
+        from .translator_nllb import translate_text, init_nllb_translator
+        logger.info("Initializing NLLB-200 translator (%s → %s, direct)...", source_lang, target_lang)
+        init_nllb_translator()
+        logger.info("Translation route: %s → %s (NLLB direct)", source_lang, target_lang)
     else:
-        logger.info("Translation route: %s → %s (direct)", source_lang, target_lang)
+        from .translator_argos import translate_text, setup_argos_translation
+        logger.info("Setting up Argos translation (%s → %s)...", source_lang, target_lang)
+        route = setup_argos_translation(from_code=source_lang, to_code=target_lang)
+        if route == "pivot:en":
+            logger.info(
+                "Translation route: %s → en → %s (Argos pivot through English)",
+                source_lang, target_lang,
+            )
+        else:
+            logger.info("Translation route: %s → %s (Argos direct)", source_lang, target_lang)
 
     # Step 2: Convert PDF to images
     logger.info("Rendering PDF to images (DPI=%d)...", dpi)
