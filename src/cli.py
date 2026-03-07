@@ -120,6 +120,17 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--tashkeel-only",
+        action="store_true",
+        help=(
+            "Diacritize Arabic text with CATT and overlay it back onto the PDF — "
+            "no translation performed. "
+            "Useful for producing a fully-vowelized (harakat-restored) Arabic PDF "
+            "from an undiacritized kitab scan. "
+            "Implies --tashkeel. The --translator and --lang options are ignored."
+        ),
+    )
+    parser.add_argument(
         "--translator",
         choices=["nllb", "argos"],
         default="nllb",
@@ -135,7 +146,11 @@ Examples:
     )
     args = parser.parse_args()
 
-    # show_tashkeel implies tashkeel
+    # --tashkeel-only implies --tashkeel (and makes --show-tashkeel irrelevant)
+    if args.tashkeel_only:
+        args.tashkeel = True
+
+    # --show-tashkeel implies --tashkeel
     if args.show_tashkeel and not args.tashkeel:
         import warnings
         warnings.warn(
@@ -153,24 +168,30 @@ Examples:
     )
 
     # Display run info
-    lang_name = LANGUAGE_PRESETS.get(args.lang, args.lang)
-    if args.tashkeel and args.show_tashkeel:
-        tashkeel_status = "enabled (show in PDF)"
-    elif args.tashkeel:
-        tashkeel_status = "enabled (silent — improves translation quality)"
+    if args.tashkeel_only:
+        print(f"Tarjim: Tashkeel-only overlay — {args.input}")
+        print(f"  Source: {args.source_lang} | Mode: diacritize Arabic, no translation")
+        print(f"  Overlay: {args.overlay_mode} | DPI: {args.dpi}")
+        print(f"  Tashkeel: overlay-only (CATT EncoderDecoder)")
     else:
-        tashkeel_status = "disabled"
+        lang_name = LANGUAGE_PRESETS.get(args.lang, args.lang)
+        if args.tashkeel and args.show_tashkeel:
+            tashkeel_status = "enabled (show in PDF)"
+        elif args.tashkeel:
+            tashkeel_status = "enabled (silent — improves translation quality)"
+        else:
+            tashkeel_status = "disabled"
 
-    translator_info = {
-        "nllb": "NLLB-200 1.3B (CTranslate2 INT8) — high quality, direct",
-        "argos": "Argos Translate — lightweight fallback",
-    }.get(args.translator, args.translator)
+        translator_info = {
+            "nllb": "NLLB-200 1.3B (CTranslate2 INT8) — high quality, direct",
+            "argos": "Argos Translate — lightweight fallback",
+        }.get(args.translator, args.translator)
 
-    print(f"Tarjim: Translating {args.input}")
-    print(f"  Source: {args.source_lang} | Target: {args.lang} ({lang_name})")
-    print(f"  Translator: {translator_info}")
-    print(f"  Overlay: {args.overlay_mode} | DPI: {args.dpi}")
-    print(f"  Tashkeel: {tashkeel_status}")
+        print(f"Tarjim: Translating {args.input}")
+        print(f"  Source: {args.source_lang} | Target: {args.lang} ({lang_name})")
+        print(f"  Translator: {translator_info}")
+        print(f"  Overlay: {args.overlay_mode} | DPI: {args.dpi}")
+        print(f"  Tashkeel: {tashkeel_status}")
     print()
 
     process_pdf(
@@ -184,8 +205,13 @@ Examples:
         tashkeel=args.tashkeel,
         show_tashkeel=args.show_tashkeel,
         translator=args.translator,
+        tashkeel_only=args.tashkeel_only,
     )
-    print(f"\nTranslated PDF saved to {args.output}")
+
+    if args.tashkeel_only:
+        print(f"\nTashkeel overlay PDF saved to {args.output}")
+    else:
+        print(f"\nTranslated PDF saved to {args.output}")
 
 
 if __name__ == "__main__":

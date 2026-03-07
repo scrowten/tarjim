@@ -114,12 +114,14 @@ After the first run, everything works fully offline.
 
 ### Arabic font for tashkeel display
 
-To display tashkeel in the PDF output (`--show-tashkeel`), place an Arabic-capable font at `fonts/amiri-regular.ttf`. The Amiri font is recommended (OFL license):
+Required for `--show-tashkeel` and `--tashkeel-only` to render harakat correctly. The **Amiri** font is recommended (OFL license, designed for classical Arabic):
 
 ```bash
 # Download from https://github.com/aliftype/amiri/releases
 # Place at: fonts/amiri-regular.ttf
 ```
+
+Without Amiri, the tool falls back to system fonts: Segoe UI / Tahoma (Windows), Noto Naskh Arabic (Linux), Geeza Pro (macOS). **Latin fonts (Times New Roman, Arial) have no Arabic glyph coverage and will produce a blank overlay — always use an Arabic-capable font.**
 
 ---
 
@@ -139,6 +141,9 @@ python -m src.cli -i kitab.pdf -o kitab_en.pdf --lang en --tashkeel
 
 # Show diacritized Arabic + translation stacked in output PDF
 python -m src.cli -i kitab.pdf -o kitab_en.pdf --lang en --tashkeel --show-tashkeel
+
+# Tashkeel-only overlay — diacritize Arabic and overlay it back, no translation
+python -m src.cli -i kitab.pdf -o kitab_tashkeel.pdf --tashkeel-only
 
 # Use Argos Translate as lightweight fallback (no GPU required)
 python -m src.cli -i kitab.pdf -o kitab_en.pdf --lang en --translator argos
@@ -160,7 +165,8 @@ python -m src.cli -i kitab.pdf -o kitab_id.pdf --lang id --verbose
 | `--source-lang` | `ar` | Source language code |
 | `--translator` | `nllb` | `nllb` (high quality) or `argos` (lightweight) |
 | `--tashkeel` | off | Diacritize Arabic before translation (CATT) |
-| `--show-tashkeel` | off | Show diacritized Arabic in output PDF |
+| `--show-tashkeel` | off | Show diacritized Arabic in output PDF (bilingual) |
+| `--tashkeel-only` | off | Diacritize and overlay Arabic only — no translation |
 | `--dpi` | `300` | Rendering DPI |
 | `--overlay-mode` | `replace` | `replace` or `clean` |
 | `--font` | (auto) | Path to .ttf font file |
@@ -175,7 +181,7 @@ uvicorn src.api:app --host 0.0.0.0 --port 8000
 # Open http://localhost:8000 in your browser
 ```
 
-The web UI lets you upload a PDF, choose translator (NLLB-200 or Argos), target language, overlay mode, and tashkeel options, then download the translated PDF.
+The web UI lets you upload a PDF, choose translator (NLLB-200 or Argos), target language, overlay mode, and tashkeel options (including tashkeel-only), then download the translated PDF.
 
 ### Docker
 
@@ -259,7 +265,7 @@ Small OpenNMT-based models (~100M params). Useful for CPU-only environments or w
 
 ## Tashkeel (Arabic Diacritization)
 
-Most classical Arabic kitab are printed without harakat (short vowel marks). This causes ambiguity that hurts translation quality. The `--tashkeel` flag uses **CATT** (Contextual Arabic Tashkeel Transformer) to restore harakat before translation.
+Most classical Arabic kitab are printed without harakat (short vowel marks). This causes ambiguity that hurts translation quality. Tarjim uses **CATT** (Contextual Arabic Tashkeel Transformer) to restore harakat.
 
 **CATT details:**
 - 2024 SOTA for Arabic diacritization
@@ -272,8 +278,23 @@ Most classical Arabic kitab are printed without harakat (short vowel marks). Thi
 | Flag | Behavior |
 |------|----------|
 | (none) | No diacritization. OCR output goes directly to translator. |
-| `--tashkeel` | Diacritize silently before translation. Better translation quality. |
-| `--tashkeel --show-tashkeel` | Diacritize + render diacritized Arabic in output PDF above translation. |
+| `--tashkeel` | Diacritize silently before translation. Better translation quality. PDF unchanged. |
+| `--tashkeel --show-tashkeel` | Diacritize + render diacritized Arabic in output PDF above translation (bilingual). |
+| `--tashkeel-only` | **No translation.** Diacritize Arabic and overlay it back onto the PDF. Produces a fully-vowelized Arabic PDF. |
+
+**Arabic font for tashkeel rendering:**
+
+For `--show-tashkeel` and `--tashkeel-only` to render harakat correctly, an Arabic-capable font is needed. Priority order:
+
+1. `fonts/amiri-regular.ttf` — **recommended** (best harakat rendering for classical kitab, OFL license)
+2. System fonts — Windows: Segoe UI, Tahoma, Calibri, Arabic Typesetting; Linux: Noto Naskh Arabic; macOS: Geeza Pro
+
+Without an Arabic font, harakat may not display correctly (Latin-only fonts like Times New Roman have no Arabic glyph coverage). Download Amiri Regular:
+
+```bash
+# Download from https://github.com/aliftype/amiri/releases
+# Place at: fonts/amiri-regular.ttf
+```
 
 ---
 

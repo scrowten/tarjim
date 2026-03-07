@@ -56,7 +56,12 @@
                 <div class="options-row tashkeel-row">
                     <div class="tashkeel-group">
                         <span class="tashkeel-label">Tashkeel (حركات):</span>
-                        <label class="checkbox-label" title="Diacritize Arabic text before translation using CATT. Improves translation accuracy for undiacritized kitab text.">
+                        <label class="checkbox-label" id="tashkeel-only-label" title="Diacritize Arabic text with CATT and overlay it back — no translation at all. Produces a fully-vowelized Arabic PDF.">
+                            <input type="checkbox" id="tashkeel-only" name="tashkeel_only">
+                            Overlay only
+                            <span class="hint">(no translation)</span>
+                        </label>
+                        <label class="checkbox-label" id="tashkeel-label" title="Diacritize Arabic text before translation using CATT. Improves translation accuracy for undiacritized kitab text.">
                             <input type="checkbox" id="tashkeel" name="tashkeel">
                             Enable
                             <span class="hint">(better translation accuracy)</span>
@@ -91,8 +96,10 @@
         const routeInfo = document.getElementById('route-info');
         const translatorSelect = document.getElementById('translator');
         const tashkeelCheckbox = document.getElementById('tashkeel');
+        const tashkeelLabel = document.getElementById('tashkeel-label');
         const showTashkeelCheckbox = document.getElementById('show-tashkeel');
         const showTashkeelLabel = document.getElementById('show-tashkeel-label');
+        const tashkeelOnlyCheckbox = document.getElementById('tashkeel-only');
 
         // Route descriptions per translator
         const routeDescriptions = {
@@ -119,6 +126,11 @@
         };
 
         function updateRouteInfo() {
+            if (tashkeelOnlyCheckbox.checked) {
+                routeInfo.textContent = 'Tashkeel only: diacritize Arabic text \u2192 overlay back (no translation)';
+                routeInfo.style.display = 'block';
+                return;
+            }
             const lang = langSelect.value;
             const tr = translatorSelect.value;
             const desc = (routeDescriptions[tr] || {})[lang] || `Arabic \u2192 ${lang}`;
@@ -128,6 +140,7 @@
 
         langSelect.addEventListener('change', updateRouteInfo);
         translatorSelect.addEventListener('change', updateRouteInfo);
+        tashkeelOnlyCheckbox.addEventListener('change', updateRouteInfo);
         updateRouteInfo();
 
         fileInput.addEventListener('change', () => {
@@ -138,6 +151,44 @@
                 fileLabel.textContent = 'Click to select a PDF file';
                 fileLabel.classList.remove('file-selected');
             }
+        });
+
+        // Tashkeel-only: disable translator, language, and show-in-PDF controls
+        tashkeelOnlyCheckbox.addEventListener('change', () => {
+            const tashkeelOnly = tashkeelOnlyCheckbox.checked;
+
+            // Translator selector
+            translatorSelect.disabled = tashkeelOnly;
+            translatorSelect.closest('.language-selector').style.opacity = tashkeelOnly ? '0.4' : '1';
+            translatorSelect.closest('.language-selector').style.pointerEvents = tashkeelOnly ? 'none' : 'auto';
+
+            // Language selector
+            langSelect.disabled = tashkeelOnly;
+            langSelect.closest('.language-selector').style.opacity = tashkeelOnly ? '0.4' : '1';
+            langSelect.closest('.language-selector').style.pointerEvents = tashkeelOnly ? 'none' : 'auto';
+
+            // "Enable tashkeel" and "Show in PDF" checkboxes
+            if (tashkeelOnly) {
+                tashkeelCheckbox.checked = true;
+                tashkeelCheckbox.disabled = true;
+                tashkeelLabel.style.opacity = '0.4';
+                tashkeelLabel.style.pointerEvents = 'none';
+                showTashkeelCheckbox.checked = false;
+                showTashkeelCheckbox.disabled = true;
+                showTashkeelLabel.style.opacity = '0.4';
+                showTashkeelLabel.style.pointerEvents = 'none';
+            } else {
+                tashkeelCheckbox.disabled = false;
+                tashkeelLabel.style.opacity = '1';
+                tashkeelLabel.style.pointerEvents = 'auto';
+                // Restore show-in-PDF state based on tashkeel checkbox
+                const tashkeelEnabled = tashkeelCheckbox.checked;
+                showTashkeelCheckbox.disabled = !tashkeelEnabled;
+                showTashkeelLabel.style.opacity = tashkeelEnabled ? '1' : '0.4';
+                showTashkeelLabel.style.pointerEvents = tashkeelEnabled ? 'auto' : 'none';
+            }
+
+            updateRouteInfo();
         });
 
         // Enable/disable "Show in PDF" based on "Enable Tashkeel" state
@@ -166,9 +217,14 @@
             submitBtn.disabled = true;
             submitBtn.textContent = 'Translating...';
 
+            const isTashkeelOnly = tashkeelOnlyCheckbox.checked;
             const langName = langSelect.options[langSelect.selectedIndex].text;
-            const tashkeelNote = tashkeelCheckbox.checked ? ' (with Tashkeel — may take a bit longer)' : '';
-            statusDiv.textContent = `Translating to ${langName}${tashkeelNote}... This may take a few minutes per page.`;
+            if (isTashkeelOnly) {
+                statusDiv.textContent = 'Diacritizing Arabic text (Tashkeel-only)... This may take a few minutes per page.';
+            } else {
+                const tashkeelNote = tashkeelCheckbox.checked ? ' (with Tashkeel — may take a bit longer)' : '';
+                statusDiv.textContent = `Translating to ${langName}${tashkeelNote}... This may take a few minutes per page.`;
+            }
             statusDiv.className = 'info';
 
             const formData = new FormData();
@@ -177,8 +233,9 @@
             formData.append('source_lang', 'ar');
             formData.append('overlay_mode', selectedOverlay);
             formData.append('translator', translatorSelect.value);
-            formData.append('tashkeel', tashkeelCheckbox.checked);
+            formData.append('tashkeel', isTashkeelOnly || tashkeelCheckbox.checked);
             formData.append('show_tashkeel', showTashkeelCheckbox.checked);
+            formData.append('tashkeel_only', isTashkeelOnly);
 
             try {
                 const response = await fetch('/translate-pdf/', {
@@ -196,12 +253,16 @@
                 const a = document.createElement('a');
                 a.style.display = 'none';
                 a.href = url;
-                a.download = `translated_${selectedLang}_${fileInput.files[0].name}`;
+                a.download = isTashkeelOnly
+                    ? `tashkeel_${fileInput.files[0].name}`
+                    : `translated_${selectedLang}_${fileInput.files[0].name}`;
                 document.body.appendChild(a);
                 a.click();
                 window.URL.revokeObjectURL(url);
 
-                statusDiv.textContent = `Translation to ${langName} successful! Your download has started.`;
+                statusDiv.textContent = isTashkeelOnly
+                    ? 'Tashkeel overlay successful! Your download has started.'
+                    : `Translation to ${langName} successful! Your download has started.`;
                 statusDiv.className = 'success';
 
             } catch (error) {

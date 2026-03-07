@@ -120,9 +120,17 @@ async def translate_pdf_endpoint(
             "Requires tashkeel=true."
         ),
     ),
+    tashkeel_only: bool = Form(
+        default=False,
+        description=(
+            "Diacritize Arabic text with CATT and overlay it back onto the PDF — "
+            "no translation performed. "
+            "Implies tashkeel=true. The translator and target_lang are ignored."
+        ),
+    ),
 ):
     """
-    Upload a PDF, translate its content, and return the translated PDF.
+    Upload a PDF, translate its content (or diacritize-only), and return the output PDF.
 
     Supports direct and pivot translation:
     - ar → en: direct translation
@@ -131,9 +139,15 @@ async def translate_pdf_endpoint(
     Optional tashkeel modes:
     - tashkeel=true: diacritize Arabic before translation (better accuracy)
     - tashkeel=true&show_tashkeel=true: also render diacritized Arabic in output PDF
+    - tashkeel_only=true: diacritize Arabic and overlay it (no translation at all)
     """
     temp_input_path = None
     temp_output_path = None
+
+    # tashkeel_only implies tashkeel; also disable show_tashkeel (different render path)
+    if tashkeel_only:
+        tashkeel = True
+        show_tashkeel = False
 
     # show_tashkeel implies tashkeel
     if show_tashkeel and not tashkeel:
@@ -155,8 +169,11 @@ async def translate_pdf_endpoint(
         temp_output_path = tempfile.mktemp(suffix=".pdf")
 
         logger.info(
-            "API request: translate %s → %s (translator: %s, overlay: %s, tashkeel: %s, show_tashkeel: %s)",
-            source_lang, target_lang, translator, overlay_mode, tashkeel, show_tashkeel,
+            "API request: %s %s → %s (translator: %s, overlay: %s, "
+            "tashkeel: %s, show_tashkeel: %s, tashkeel_only: %s)",
+            "tashkeel-only" if tashkeel_only else "translate",
+            source_lang, target_lang, translator, overlay_mode,
+            tashkeel, show_tashkeel, tashkeel_only,
         )
 
         # Run the translation pipeline
@@ -169,13 +186,17 @@ async def translate_pdf_endpoint(
             tashkeel=tashkeel,
             show_tashkeel=show_tashkeel,
             translator=translator,
+            tashkeel_only=tashkeel_only,
         )
 
         # Build a descriptive filename
-        lang_suffix = target_lang
-        tashkeel_suffix = "_tashkeel" if tashkeel else ""
-        translator_suffix = f"_{translator}" if translator != "nllb" else ""
-        output_filename = f"translated_{lang_suffix}{tashkeel_suffix}{translator_suffix}_{file.filename}"
+        if tashkeel_only:
+            output_filename = f"tashkeel_{file.filename}"
+        else:
+            lang_suffix = target_lang
+            tashkeel_suffix = "_tashkeel" if tashkeel else ""
+            translator_suffix = f"_{translator}" if translator != "nllb" else ""
+            output_filename = f"translated_{lang_suffix}{tashkeel_suffix}{translator_suffix}_{file.filename}"
 
         return FileResponse(
             temp_output_path,
