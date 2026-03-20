@@ -175,7 +175,8 @@ def _reshape_arabic(text: str) -> str:
     Apply Arabic text shaping and bidi reordering for correct PIL rendering.
 
     PIL draws characters left-to-right without Arabic shaping. This helper:
-      1. Reshapes Arabic characters so they connect properly (arabic_reshaper)
+      1. Reshapes Arabic characters so they connect properly (arabic_reshaper),
+         with delete_harakat=False to preserve tashkeel (vowel marks).
       2. Applies the Unicode bidi algorithm to produce the visual display order
          (python-bidi), converting RTL logical order to LTR rendering order.
 
@@ -190,7 +191,12 @@ def _reshape_arabic(text: str) -> str:
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
-        reshaped = arabic_reshaper.reshape(text)
+        # delete_harakat defaults to True in arabic_reshaper — must explicitly
+        # disable it or all tashkeel (vowel marks) are stripped before rendering.
+        reshaper = arabic_reshaper.ArabicReshaper(configuration={
+            "delete_harakat": False,
+        })
+        reshaped = reshaper.reshape(text)
         return get_display(reshaped)
     except ImportError:
         logger.debug(
@@ -231,6 +237,20 @@ def draw_arabic_text_in_box(
     # Shape and reorder for RTL rendering
     display_text = _reshape_arabic(text)
 
+    # Arabic fonts (especially Amiri) have ascent+descent ≈ 1.75× the nominal font
+    # size due to tall harakat marks.  Shrink the font until one line fits vertically.
+    ascent, descent = font.getmetrics()
+    line_height = ascent + descent + 2
+    if line_height > max_height:
+        try:
+            ratio = line_height / max(font.size, 1)        # e.g. 1.76 for Amiri
+            new_size = max(6, int(max_height / ratio))
+            font = load_font(new_size, font.path)
+            ascent, descent = font.getmetrics()
+            line_height = ascent + descent + 2
+        except Exception:
+            pass  # keep original font; first line may clip slightly
+
     # Word-wrap: split shaped text into lines that fit within max_width
     words = display_text.split()
     lines = []
@@ -247,14 +267,16 @@ def draw_arabic_text_in_box(
     if current:
         lines.append(current)
 
-    # Draw lines right-aligned within the bbox
-    ascent, descent = font.getmetrics()
-    line_height = ascent + descent + 2
+    if not lines:
+        return
 
+    # Draw lines right-aligned within the bbox.
+    # Always render the first line even if it slightly clips the bottom —
+    # skipping it entirely is worse than a minor visual overflow.
     y = y1
-    for line in lines:
-        if y + line_height > y2:
-            break
+    for i, line in enumerate(lines):
+        if i > 0 and y + line_height > y2:
+            break  # subsequent lines that overflow are skipped
         line_width = draw.textlength(line, font=font)
         x_pos = x2 - int(line_width)  # right-align
         draw.text((x_pos, y), line, font=font, fill=fill)
